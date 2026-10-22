@@ -295,15 +295,7 @@
 @keyframes wlSlide { to { opacity: 1; transform: none; } }
 .wl-card .k { display: flex; justify-content: space-between; font-size: 10.5px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase; opacity: .78; margin-bottom: 9px; }
 .wl-card .k span { letter-spacing: .3px; text-transform: none; font-size: 12px; opacity: .95; }
-.nx { display: flex; align-items: center; gap: 11px; }
-.nx > i { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; background: var(--c); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 30%, transparent), 0 0 12px var(--c); }
-.nx > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-.nx b { font-size: 14.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.nx > div span { font-size: 12px; opacity: .75; }
-.nx .when { font-size: 11.5px; font-weight: 700; padding: 4px 9px; border-radius: 99px; background: rgba(255, 255, 255, .14); white-space: nowrap; }
-.nx .when.soon { background: rgba(251, 146, 60, .3); box-shadow: 0 0 0 1px rgba(251, 146, 60, .55); animation: wlSoon 2s ease-in-out infinite; }
 @keyframes wlSoon { 50% { box-shadow: 0 0 0 1px rgba(251, 146, 60, .55), 0 0 14px rgba(251, 146, 60, .6); } }
-.nx.empty { font-size: 13px; opacity: .8; line-height: 1.4; padding: 0; color: #fff; text-align: left; animation: none; }
 .wk { display: flex; gap: 6px; align-items: flex-end; height: 74px; }
 .wb { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 5px; height: 100%; }
 .wb i { width: 100%; max-width: 26px; height: calc(var(--p) * 50px + 4px); border-radius: 7px 7px 4px 4px; background: rgba(255, 255, 255, .32); transform-origin: bottom; transform: scaleY(0); transition: background .3s; }

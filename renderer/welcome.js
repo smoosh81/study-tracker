@@ -195,7 +195,6 @@
       const today = ctx.todayTotal();
       const streak = ctx.streak();
       const grown = D.trees.length;
-      const next = ctx.nextEvent();
       const week = ctx.weekTotals(); // [{label, sec, today}]
       const wmax = Math.max(1, ...week.map((w) => w.sec));
       const q = QUOTES[(now.getFullYear() * 400 + now.getMonth() * 31 + now.getDate()) % QUOTES.length];
@@ -237,22 +236,16 @@
               </div>
             </div>
             <div class="wl-side">
-              <div class="wl-card next" style="--i:0">
-                <div class="k">Next up</div>
-                ${next ? `<div class="nx" style="--c:${next.color}"><i></i><div><b>${esc(next.label)}</b><span>${esc(next.subject)} · ${esc(next.type)}</span></div><span class="when${next.days <= 3 ? ' soon' : ''}">${esc(next.when)}</span></div>`
-                  : '<div class="nx empty">No tests or assignments coming up. Add them in the Calendar.</div>'}
-              </div>
-              <div class="wl-card week" style="--i:1">
+              <div class="wl-card week" style="--i:0">
                 <div class="k">This week <span>${ctx.fmtDur(week.reduce((a, w) => a + w.sec, 0))}</span></div>
                 <div class="wk">${week.map((w, i) => `<div class="wb${w.today ? ' today' : ''}" style="--i:${i};--p:${(w.sec / wmax).toFixed(3)}" title="${ctx.fmtDur(w.sec)}"><i></i><span>${w.label}</span></div>`).join('')}</div>
               </div>
-              ${unc || free ? `<div class="wl-card perks" style="--i:2">${unc ? `<button class="perk" data-go="badges"><b>${unc}</b> reward${unc > 1 ? 's' : ''} to claim</button>` : ''}${free ? `<button class="perk" data-go="trees"><b>${free}</b> free case${free > 1 ? 's' : ''} to open</button>` : ''}</div>` : ''}
+              ${unc || free ? `<div class="wl-card perks" style="--i:1">${unc ? `<button class="perk" data-go="badges"><b>${unc}</b> reward${unc > 1 ? 's' : ''} to claim</button>` : ''}${free ? `<button class="perk" data-go="trees"><b>${free}</b> free case${free > 1 ? 's' : ''} to open</button>` : ''}</div>` : ''}
             </div>
           </div>
           <div class="wl-actions">
             ${ctx.paused ? `<button class="btn primary big wl-go" data-go="resume"><svg viewBox="0 0 24 24"><path d="M7 4.5v15l13-7.5z"/></svg>Resume ${esc(ctx.paused.subject)} <small>${ctx.fmtDur(ctx.paused.sec)}</small></button>`
               : '<button class="btn primary big wl-go" data-go="timer"><svg viewBox="0 0 24 24"><path d="M7 4.5v15l13-7.5z"/></svg>Start studying</button>'}
-            <button class="btn wl-btn" data-go="calendar"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>Calendar</button>
             <button class="btn wl-btn" data-go="grades"><svg viewBox="0 0 24 24"><path d="M5 3h10l4 4v14H5z"/><path d="M8.5 17l3-8 3 8M9.6 14.3h3.8"/></svg>Grades</button>
             <button class="btn wl-btn" data-go="garden"><svg viewBox="0 0 24 24"><path d="M12 22v-8M12 14c-4 0-7-3-7-7 4 0 7 3 7 7zM12 12c0-4 3-7 7-7 0 4-3 7-7 7z"/></svg>Garden</button>
           </div>
