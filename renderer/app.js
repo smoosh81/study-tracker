@@ -2056,33 +2056,35 @@
     if (!G.subject) { host.innerHTML = ''; return; }
     const sem = G.sem, other = sem === 1 ? 2 : 1;
     const rows = semRows(G.subject, sem);
-    const items = rows.filter((x) => !x.exam);
-    const exam = rows.find((x) => x.exam);
+    const items = rows.filter((x) => !x.exam), exams = rows.filter((x) => x.exam);
     const color = colorOf(G.subject);
-    const row = (x, i) => `<div class="gi-row extra" style="--i:${i}" data-id="${x.id}"><span class="gi-ic plus"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>
-          <div class="gi-name"><input class="input gi-in-name" maxlength="50" placeholder="Assessment name" value="${esc(x.name || '')}"></div>
+    const row = (x, i) => `<div class="gi-row extra${x.exam ? ' is-exam' : ''}" style="--i:${i};--c:${color}" data-id="${x.id}"><span class="gi-ic ${x.exam ? 'exam' : 'plus'}">${x.exam ? EXAM_ICON : '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>'}</span>
+          <div class="gi-name"><input class="input gi-in-name" maxlength="50" placeholder="${x.exam ? 'Exam name' : 'Assessment name'}" value="${esc(x.name || '')}"></div>
           <span class="gi-w"><span class="suffix-in sm"><input type="number" class="input gi-in-w" min="0" max="100" step="0.5" placeholder="Weight" value="${x.weight ?? ''}"><b>%</b></span></span>
           <span class="gi-score"><span class="suffix-in sm"><input type="number" class="input gi-in-p" min="0" max="150" step="0.5" placeholder="Score" value="${x.pct ?? ''}"><b>%</b></span><span class="gi-tag">${x.pct != null ? gradeTag(x.pct) : ''}</span></span>
           <span class="gi-act"><button class="icon-btn sm gi-move" title="Move to Semester ${other}">${MOVE_ICON}</button><button class="icon-btn sm gi-del" title="Remove">${XICON}</button></span></div>`;
-    host.innerHTML = `<div class="sem-row">${[1, 2].map((n) => `<button class="card sem-card stagger${n === sem ? ' on' : ''}" data-sem="${n}" style="--i:${n + 1};--c:${color}" id="sem-${n}"></button>`).join('')}</div>
+    // the summary circles: each semester's average and its exams, left out when there's nothing in them
+    const all = (n) => semRows(G.subject, n);
+    const stats = [
+      { id: 'a1', sem: 1, kind: 'avg', rows: all(1) },
+      { id: 'a2', sem: 2, kind: 'avg', rows: all(2) },
+      { id: 'e1', sem: 1, kind: 'exam', rows: all(1).filter((x) => x.exam) },
+      { id: 'e2', sem: 2, kind: 'exam', rows: all(2).filter((x) => x.exam) },
+    ].filter((s) => s.rows.length);
+    host.innerHTML = `${stats.length ? `<div class="sem-row n${stats.length}">${stats.map((s, i) => `<button class="card sem-card stagger${s.kind === 'exam' ? ' exam' : ''}${s.sem === sem ? ' on' : ''}" data-sem="${s.sem}" data-kind="${s.kind}" style="--i:${i + 2};--c:${color}" id="st-${s.id}"></button>`).join('')}</div>` : ''}
     <div class="grades-layout">
-      <div class="card gr-items stagger" style="--i:4">
-        <div class="card-head"><h3>Semester ${sem}</h3><span class="muted">Tests, assignments and anything else that counts</span></div>
+      <div class="card gr-items stagger" style="--i:6">
+        <div class="card-head"><div class="seg" id="gr-sem"><div class="seg-pill"></div>${[1, 2].map((n) => `<button data-sem="${n}"${n === sem ? ' class="active"' : ''}>Semester ${n}${n === curSem() ? ' <i class="now">Now</i>' : ''}</button>`).join('')}</div></div>
         <div class="gi-head"><span></span><span>Assessment</span><span>Weight</span><span>Score</span><span></span></div>
-        <div class="gi-list">${items.length ? items.map(row).join('') : `<div class="empty">Nothing in Semester ${sem} yet. Add your first assessment below.</div>`}</div>
-        <div class="btn-row"><button class="btn" id="gi-add"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Add an assessment</button></div>
-        <div class="gi-exam${exam && exam.pct != null ? ' done' : ''}" style="--c:${color}">
-          <span class="gi-ic exam">${EXAM_ICON}</span>
-          <div class="gi-name"><b>Semester ${sem} exam</b><span class="muted">${exam && exam.pct != null ? 'Done' : 'Add it once you know the weight or your score'}</span></div>
-          <span class="gi-w"><span class="suffix-in sm"><input type="number" class="input" id="gx-w" min="0" max="100" step="0.5" placeholder="Weight" value="${exam && exam.weight != null ? exam.weight : ''}"><b>%</b></span></span>
-          <span class="gi-score"><span class="suffix-in sm"><input type="number" class="input" id="gx-p" min="0" max="150" step="0.5" placeholder="Score" value="${exam && exam.pct != null ? exam.pct : ''}"><b>%</b></span><span class="gi-tag" id="gx-tag">${exam && exam.pct != null ? gradeTag(exam.pct) : ''}</span></span>
-          <span></span>
-        </div>
-        <p class="muted tiny-note">Leave a score empty if you haven't done it yet. Weights are the % of the semester grade each one is worth.</p>
+        <div class="gi-list">${items.length ? items.map(row).join('') : `<div class="empty">No assessments in Semester ${sem} yet.</div>`}</div>
+        ${exams.length ? `<div class="gi-sub">${exams.length === 1 ? 'Exam' : 'Exams'}</div><div class="gi-list exams">${exams.map((x, i) => row(x, i + items.length)).join('')}</div>` : ''}
+        <div class="btn-row"><button class="btn" id="gi-add"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Add an assessment</button><button class="btn" id="gi-add-exam">${EXAM_ICON}Add an exam</button></div>
+        <p class="muted tiny-note">Leave a score empty if you haven't done it yet. Weights are the % of the semester grade each one is worth. No exam this semester? Just don't add one, or remove it with ✕.</p>
       </div>
-      <div class="gr-side"><div class="card gr-target stagger" style="--i:5" id="gr-target"></div></div>
+      <div class="gr-side"><div class="card gr-target stagger" style="--i:7" id="gr-target"></div></div>
     </div>`;
     if (!fresh) $$('.stagger', host).forEach((el) => el.classList.add('anim-done'));
+    requestAnimationFrame(positionSegs);
     wireGradeRows();
     renderGradeResult();
   }
@@ -2091,20 +2093,24 @@
     const num = (v) => (v.trim() === '' || !Number.isFinite(+v) ? null : Math.max(0, +v));
     const list = () => (D.gradeExtras[G.subject] = D.gradeExtras[G.subject] || []);
     const tidy = () => { if (!list().length) delete D.gradeExtras[G.subject]; };
-    $$('.sem-card', host).forEach((c) => c.addEventListener('click', () => {
-      const n = +c.dataset.sem;
+    const pickSem = (n) => {
       if (n === G.sem) return;
       G.sem = n;
       renderGradeBody(false);
-      $$('.gi-row, .gi-exam', host).forEach((el) => { el.style.animation = 'none'; void el.offsetWidth; el.style.animation = ''; });
-    }));
-    $('#gi-add', host).addEventListener('click', () => {
-      list().push({ id: uid(), name: '', pct: null, weight: null, sem: G.sem });
+      $$('.gi-row', host).forEach((el) => { el.style.animation = 'none'; void el.offsetWidth; el.style.animation = ''; });
+    };
+    $$('.sem-card', host).forEach((c) => c.addEventListener('click', () => pickSem(+c.dataset.sem)));
+    $$('#gr-sem button', host).forEach((b) => b.addEventListener('click', () => pickSem(+b.dataset.sem)));
+    const add = (exam) => {
+      const n = list().filter((y) => y.exam && y.sem === G.sem).length;
+      list().push(exam ? { id: uid(), name: n ? `Exam ${n + 1}` : `Semester ${G.sem} exam`, pct: null, weight: null, sem: G.sem, exam: true } : { id: uid(), name: '', pct: null, weight: null, sem: G.sem });
       save();
       renderGradeBody(false);
-      const ins = $$('.gi-row.extra .gi-in-name', host);
+      const ins = $$(`.gi-row${exam ? '.is-exam' : ':not(.is-exam)'} ${exam ? '.gi-in-w' : '.gi-in-name'}`, host);
       if (ins.length) ins[ins.length - 1].focus();
-    });
+    };
+    $('#gi-add', host).addEventListener('click', () => add(false));
+    $('#gi-add-exam', host).addEventListener('click', () => add(true));
     $$('.gi-row.extra', host).forEach((r) => {
       const x = list().find((y) => y.id === r.dataset.id);
       if (!x) return;
@@ -2121,40 +2127,22 @@
       $('.gi-move', r).addEventListener('click', () => { x.sem = G.sem === 1 ? 2 : 1; out(`Moved to Semester ${x.sem}`); });
       $('.gi-del', r).addEventListener('click', () => { D.gradeExtras[G.subject] = list().filter((y) => y.id !== x.id); tidy(); out(); });
     });
-    // the semester exam: its row is made when you first type in it, and removed again if both boxes are emptied
-    const ex = $('.gi-exam', host);
-    const examInput = () => {
-      let e = list().find((y) => y.exam && y.sem === G.sem);
-      const w = num($('#gx-w', ex).value), p = num($('#gx-p', ex).value);
-      if (!e && (w != null || p != null)) { e = { id: uid(), name: `Semester ${G.sem} exam`, pct: null, weight: null, sem: G.sem, exam: true }; list().push(e); }
-      if (e) {
-        e.weight = w != null ? Math.min(100, w) : null;
-        e.pct = p;
-        if (w == null && p == null) { D.gradeExtras[G.subject] = list().filter((y) => y !== e); tidy(); }
-      }
-      save();
-      $('#gx-tag', ex).innerHTML = p != null ? gradeTag(p) : '';
-      ex.classList.toggle('done', p != null);
-      $('.gi-name .muted', ex).textContent = p != null ? 'Done' : 'Add it once you know the weight or your score';
-      renderGradeResult();
-    };
-    $('#gx-w', ex).addEventListener('input', examInput);
-    $('#gx-p', ex).addEventListener('input', examInput);
-    $('#gx-p', ex).addEventListener('change', () => checkAchievements());
   }
-  // the two semester cards (average, letter, ring) and the "what do I need" card for the open semester
+  // the summary circles (semester averages and exams) and the "what do I need" card for the open semester
   function renderGradeResult() {
-    [1, 2].forEach((n) => {
-      const el = $(`#sem-${n}`);
-      if (!el) return;
-      const m = gradeMath(semRows(G.subject, n));
+    $$('#gr-body .sem-card').forEach((el) => {
+      const n = +el.dataset.sem, isExam = el.dataset.kind === 'exam';
+      const rows = semRows(G.subject, n).filter((x) => !isExam || x.exam);
+      const m = gradeMath(rows);
       const g = letterOf(m.avg);
       const R = 30, C = 2 * Math.PI * R;
       const prevP = +(el.dataset.p || 0), p = m.avg != null ? Math.min(100, m.avg) : 0;
-      const count = semRows(G.subject, n).length;
-      const sub = m.mode === 'weighted' ? `from ${fmtPct(m.doneW)} of the weight` : m.mode === 'plain' ? 'plain average (no weights yet)' : count ? `${count} assessment${count === 1 ? '' : 's'}, no scores yet` : 'Nothing added yet';
+      const label = isExam ? `Semester ${n} ${rows.length > 1 ? 'exams' : 'exam'}` : `Semester ${n} average`;
+      const sub = m.avg == null ? (isExam ? 'No score yet' : 'No scores yet')
+        : isExam ? (rows.length > 1 ? `${m.graded.length} of ${rows.length} done${m.mode === 'weighted' ? ', weighted' : ''}` : m.gw.length ? `worth ${fmtPct(m.doneW)}` : 'Done')
+        : m.mode === 'weighted' ? `from ${fmtPct(m.doneW)} of the weight` : 'plain average (no weights yet)';
       el.innerHTML = `<div class="sem-ring"><svg viewBox="0 0 76 76"><circle cx="38" cy="38" r="${R}" class="trk"/><circle cx="38" cy="38" r="${R}" class="val" style="stroke:${gradeColor(g)};stroke-dasharray:${C};stroke-dashoffset:${C * (1 - prevP / 100)}"/></svg><span class="sem-letter" style="color:${gradeColor(g)}">${g ? esc(g.l) : '–'}</span></div>
-        <div class="sem-info"><span class="sem-k">Semester ${n}${n === curSem() ? '<i>Now</i>' : ''}</span><b>${m.avg != null ? fmtPct(m.avg) : 'No grades yet'}</b><span class="muted">${sub}</span>${m.allW > 100.01 ? `<span class="gr-warn">Weights add up to ${fmtPct(m.allW)}</span>` : ''}</div>`;
+        <div class="sem-info"><span class="sem-k">${label}</span><b>${m.avg != null ? fmtPct(m.avg) : '–'}</b><span class="muted">${sub}</span>${!isExam && m.allW > 100.01 ? `<span class="gr-warn">Weights add up to ${fmtPct(m.allW)}</span>` : ''}</div>`;
       el.dataset.p = p;
       const v = $('.val', el);
       requestAnimationFrame(() => requestAnimationFrame(() => { v.style.strokeDashoffset = C * (1 - p / 100); }));
