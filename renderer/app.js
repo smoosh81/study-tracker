@@ -1,0 +1,2439 @@
+/* Study Tracker: main window logic */
+(function () {
+  'use strict';
+
+  // ---------------- constants ----------------
+  const ROOT_SEC = 600;              // 10 minutes for a tree to take root
+  // Coins (since 1.3.0): 1 coin per minute studied, paid once the tree takes root at 10 minutes
+  // (so rooting pays 10 at once), plus a 5 coin bonus at every full hour. Rare trees multiply it.
+  const HOUR_BONUS = 5;
+  function coinsFor(sec, species) {
+    if (sec < ROOT_SEC) return 0;
+    const base = Math.floor(sec / 60) + HOUR_BONUS * Math.floor(sec / 3600);
+    return Math.round(base * (1 + boostOf(species)));
+  }
+  const PALETTE = ['#4ade80', '#38bdf8', '#fb923c', '#f472b6', '#a78bfa', '#facc15', '#2dd4bf', '#f87171', '#60a5fa', '#c084fc', '#34d399', '#fbbf24', '#e879f9', '#94a3b8'];
+  const THEMES = [
+    { id: 'forest', name: 'Forest', bg: '#0e1913', sf: '#16281e', ac: '#4ade80', a2: '#a3e635', tx: '#e8f1ea', dark: true },
+    { id: 'ocean', name: 'Ocean', bg: '#0a1420', sf: '#112133', ac: '#38bdf8', a2: '#818cf8', tx: '#e6f0f8', dark: true },
+    { id: 'sunset', name: 'Sunset', bg: '#1a0f12', sf: '#28171d', ac: '#fb923c', a2: '#f472b6', tx: '#f8ece6', dark: true },
+    { id: 'midnight', name: 'Midnight', bg: '#08080e', sf: '#12121d', ac: '#a78bfa', a2: '#22d3ee', tx: '#ececf5', dark: true },
+    { id: 'paper', name: 'Paper', bg: '#f3efe7', sf: '#fffdf9', ac: '#2f855a', a2: '#d69e2e', tx: '#1f2420', dark: false },
+    { id: 'sakura', name: 'Sakura', bg: '#fbf0f2', sf: '#ffffff', ac: '#db2777', a2: '#f59e0b', tx: '#2b1d22', dark: false },
+    { id: 'lavender', name: 'Lavender', bg: '#f2f0fb', sf: '#ffffff', ac: '#7c3aed', a2: '#06b6d4', tx: '#1f1b2e', dark: false },
+  ];
+  const PRESET_SUBJECTS = [
+    'English', 'English Language', 'Literature', 'General Maths', 'Mathematical Methods', 'Specialist Maths',
+    'Physics', 'Chemistry', 'Biology', 'Psychology', 'Economics', 'Accounting', 'Business Management',
+    'Legal Studies', 'History', 'Geography', 'Health & Human Dev', 'Physical Education',
+    'Visual Comm Design', 'Studio Arts', 'Media', 'Software Development', 'Languages', 'Music',
+  ];
+  const CHECK = '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7"/></svg>';
+  const XICON = '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+
+  // ---------------- helpers ----------------
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+  const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const pad = (n) => String(n).padStart(2, '0');
+  const fmtHMS = (sec) => { sec = Math.max(0, Math.floor(sec)); return `${pad(Math.floor(sec / 3600))}:${pad(Math.floor(sec / 60) % 60)}:${pad(sec % 60)}`; };
+  const fmtMS = (sec) => { sec = Math.max(0, Math.ceil(sec)); return `${pad(Math.floor(sec / 60))}:${pad(sec % 60)}`; };
+  function fmtDur(sec) {
+    sec = Math.round(sec);
+    const h = Math.floor(sec / 3600), m = Math.floor(sec / 60) % 60;
+    if (h && m) return `${h}h ${m}m`;
+    if (h) return `${h}h`;
+    if (m) return `${m}m`;
+    return sec > 0 ? `${sec}s` : '0m';
+  }
+  const fmtTime = (d) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const dayKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const startOfWeek = (d) => { const x = startOfDay(d); const wd = (x.getDay() + 6) % 7; x.setDate(x.getDate() - wd); return x; };
+  const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const easeOut = (t) => 1 - Math.pow(1 - t, 3);
+
+  function animateNumber(el, to, fmt, dur = 800) {
+    const from = +el.dataset.val || 0;
+    el.dataset.val = to;
+    if (el._raf) cancelAnimationFrame(el._raf);
+    const t0 = performance.now();
+    const step = (t) => {
+      const k = Math.min(1, (t - t0) / dur);
+      el.textContent = fmt(from + (to - from) * easeOut(k));
+      if (k < 1) el._raf = requestAnimationFrame(step);
+    };
+    el._raf = requestAnimationFrame(step);
+  }
+
+  // ---------------- data ----------------
+  // SCHEMA is the save-file format version. Bump it and add a migration below whenever
+  // the save format changes, so older saves are always upgraded instead of lost.
+  const SCHEMA = 5;
+  const MIGRATIONS = {
+    // 1 -> 2 (app 1.0.1): subjects can be archived; coins are counted per 10-minute milestone
+    1: (d) => {
+      (d.subjects || []).forEach((s) => { s.archived = !!s.archived; });
+      if (d.active) {
+        d.active.milestones = d.active.rooted ? 1 + (d.active.bonuses || 0) : 0;
+        delete d.active.bonuses;
+      }
+      return 'Added "finished subject" flag; coin tracking switched to 10-minute milestones';
+    },
+    // 2 -> 3 (app 1.1.0): tree collection + cases, each session remembers its tree, tutorial flag
+    2: (d) => {
+      const trees = Array.isArray(d.trees) ? d.trees : [];
+      const sessions = Array.isArray(d.sessions) ? d.sessions : [];
+      const owned = { oak: 1, pine: 1 };
+      trees.forEach((t) => { if (t.species) owned[t.species] = Math.max(owned[t.species] || 0, 1); });
+      if (d.active && d.active.species) owned[d.active.species] = Math.max(owned[d.active.species] || 0, 1);
+      d.collection = { owned, opened: 0 };
+      // link existing garden trees to the session they grew in
+      trees.forEach((t) => {
+        const s = sessions.find((x) => x.subject === t.subject && x.date === t.date);
+        if (s) { s.tree = t.species; s.outcome = 'grown'; t.sessionId = s.id; }
+      });
+      if (d.active) {
+        d.active.sessionId = d.active.sessionId || uid();
+        const t = trees.find((x) => x.id === d.active.treeId);
+        if (t) t.sessionId = d.active.sessionId;
+      }
+      const last = trees.slice().sort((a, b) => new Date(b.date) - new Date(a.date))[0];
+      d.selectedTree = last ? last.species : 'oak';
+      d.profile = d.profile || {};
+      d.profile.tutorialSeen = false;
+      return 'Added tree collection and cases; sessions now remember their tree; garden trees linked to sessions';
+    },
+    // 3 -> 4 (app 1.2.0): favourite trees (kept at the front of the tree picker)
+    3: (d) => {
+      if (!Array.isArray(d.favTrees)) d.favTrees = [];
+      return 'Added favourite trees';
+    },
+    // 4 -> 5 (app 1.3.0): achievements; the garden's withered count now comes from history
+    4: (d) => {
+      if (!d.achievements || typeof d.achievements !== 'object') d.achievements = {};
+      d.badgesSeeded = false; // badges already earned are awarded quietly on first launch
+      if (d.active) d.active.hours = Math.floor(((d.active.acc || 0) / 1000) / 3600);
+      return 'Added achievements; coins now paid per minute; withered count taken from history';
+    },
+  };
+  let readOnly = false; // true if the save came from a newer version of the app
+  function migrate(raw) {
+    if (!raw || typeof raw !== 'object') return raw;
+    let v = +raw.version || 1;
+    if (v > SCHEMA) { readOnly = true; return raw; }
+    if (!Array.isArray(raw.migrationLog)) raw.migrationLog = [];
+    while (v < SCHEMA) {
+      const step = MIGRATIONS[v];
+      const note = step ? step(raw) : '';
+      raw.migrationLog.push({ from: v, to: v + 1, at: new Date().toISOString(), app: APP_VERSION, note });
+      v += 1;
+      raw.version = v;
+    }
+    return raw;
+  }
+  let APP_VERSION = '';
+  let D = null;
+  function blank() {
+    return {
+      version: SCHEMA,
+      migrationLog: [],
+      profile: { name: '', setupDone: false, theme: 'forest', autoMini: false, tutorialSeen: false },
+      collection: { owned: { oak: 1, pine: 1 }, opened: 0 },
+      selectedTree: 'oak',
+      favTrees: [],
+      achievements: {},
+      badgesSeeded: true,
+      subjects: [],
+      sessions: [],
+      trees: [],
+      coins: 0,
+      withered: 0,
+      active: null,
+    };
+  }
+  function normalise(x) {
+    const b = blank();
+    if (!x || typeof x !== 'object') return b;
+    const out = Object.assign(b, x);
+    out.profile = Object.assign(blank().profile, x.profile || {});
+    out.subjects = Array.isArray(x.subjects) ? x.subjects.filter((s) => s && s.name) : [];
+    out.sessions = Array.isArray(x.sessions) ? x.sessions.filter((s) => s && s.subject && s.date && s.duration >= 0) : [];
+    out.trees = Array.isArray(x.trees) ? x.trees : [];
+    out.sessions.forEach((s) => { if (!s.id) s.id = uid(); });
+    out.subjects.forEach((s) => { s.archived = !!s.archived; });
+    out.collection = Object.assign({ owned: {}, opened: 0 }, x.collection || {});
+    out.collection.owned = Object.assign({ oak: 1, pine: 1 }, out.collection.owned || {});
+    if (!out.collection.owned[out.selectedTree]) out.selectedTree = 'oak';
+    out.achievements = x.achievements && typeof x.achievements === 'object' && !Array.isArray(x.achievements) ? x.achievements : {};
+    out.badgesSeeded = x.badgesSeeded !== false;
+    out.favTrees = Array.isArray(x.favTrees) ? x.favTrees.filter((id) => typeof id === 'string') : [];
+    out.coins = +x.coins || 0;
+    out.withered = +x.withered || 0;
+    return out;
+  }
+  let saveTimer = null;
+  function save(now) {
+    clearTimeout(saveTimer);
+    if (readOnly) return;
+    D.appVersion = APP_VERSION;
+    if (now) return window.api.save(D);
+    saveTimer = setTimeout(() => window.api.save(D), 250);
+  }
+  window.addEventListener('beforeunload', () => {
+    if (T.state !== 'idle') persistActive();
+    if (!readOnly) try { D.appVersion = APP_VERSION; window.api.saveSync(D); } catch (e) {}
+  });
+  const subj = (name) => D.subjects.find((s) => s.name === name);
+  const activeSubjects = () => D.subjects.filter((s) => !s.archived);
+  const counted = (s) => !s.cancelled; // cancelled sessions show in history but not in totals
+  const owns = (id) => (D.collection.owned[id] || 0) > 0;
+  const rarityOf = (id) => window.Tree.RARITIES[window.Tree.get(id).rarity];
+  const boostOf = (id) => rarityOf(id).boost;
+  const pct = (b) => `+${Math.round(b * 100)}%`;
+  const isFav = (id) => D.favTrees.includes(id);
+  // favourites first, then rarest first
+  function treeOrder(a, b) {
+    const ord = window.Tree.RARITY_ORDER;
+    return (isFav(b.id) - isFav(a.id)) || (isFav(a.id) && isFav(b.id) ? D.favTrees.indexOf(a.id) - D.favTrees.indexOf(b.id) : 0) || ord.indexOf(b.rarity) - ord.indexOf(a.rarity);
+  }
+  const STAR = '<svg viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.9z"/></svg>';
+  const starHtml = (id) => `<span class="fav-star${isFav(id) ? ' on' : ''}" role="button" data-fav="${id}" title="${isFav(id) ? 'Remove from favourites' : 'Favourite: keep at the front'}">${STAR}</span>`;
+  function toggleFav(id) {
+    if (isFav(id)) D.favTrees = D.favTrees.filter((x) => x !== id);
+    else D.favTrees.push(id);
+    save();
+    return isFav(id);
+  }
+  // a session's tree: the one it grew, or for older/manual sessions a plain oak
+  const treeOfSession = (s) => s.tree || 'oak';
+  const isWithered = (s) => s.outcome ? s.outcome === 'withered' : s.duration < ROOT_SEC;
+  // the garden's withered count comes straight from history, so deleting a session updates it
+  const witheredCount = () => D.sessions.filter(isWithered).length;
+  // static (non-animated) tree markup for lists; call paintTrees(container) after inserting
+  function staticTree(species, sec, withered, key, loose) {
+    return window.Tree.build(species, key).replace('<svg class="tree', `<svg data-sec="${Math.round(sec)}"${withered ? ' data-withered="1"' : ''}${loose ? ' data-loose="1"' : ''} class="tree static`);
+  }
+  function paintTrees(root) {
+    $$('svg.tree.static[data-sec]', root).forEach((svg) => {
+      if (svg._painted) return;
+      svg._painted = true;
+      const sec = +svg.dataset.sec;
+      const g = window.Tree.growthFor(svg.dataset.withered ? Math.min(sec, ROOT_SEC * 0.7) : Math.max(sec, ROOT_SEC));
+      window.Tree.setGrowth(svg, g.p, g.g);
+      if (svg.dataset.withered) svg.classList.add('withered');
+      // crop the picture to the tree so small thumbnails stay readable;
+      // "loose" keeps some of the size difference between short and long sessions
+      if (svg.dataset.fixed) return;
+      let sz = svg.dataset.withered ? 0.6 : window.Tree.sizeFor(g.p, g.g);
+      if (svg.dataset.loose) sz = Math.max(sz, 0.82);
+      const w = 172 * sz, h = 214 * sz;
+      svg.setAttribute('viewBox', `${(100 - w / 2).toFixed(1)} ${(217 - h).toFixed(1)} ${w.toFixed(1)} ${h.toFixed(1)}`);
+    });
+  }
+  const colorOf = (name) => (subj(name) || {}).color || '#94a3b8';
+  function nextColor() {
+    const used = new Set(D.subjects.map((s) => s.color));
+    return PALETTE.find((c) => !used.has(c)) || PALETTE[D.subjects.length % PALETTE.length];
+  }
+  function ensureSubject(name) {
+    const s = subj(name);
+    if (!s) D.subjects.push({ id: uid(), name, color: nextColor(), archived: false });
+    return s;
+  }
+
+  // ---------------- theme ----------------
+  function applyTheme(id, ev) {
+    const th = THEMES.find((t) => t.id === id) || THEMES[0];
+    const doIt = () => {
+      document.body.dataset.theme = th.id;
+      miniVars = null;
+      window.api.setTitleBar('#00000000', th.dark ? '#e8eef0' : '#2a2a2a');
+      pushMini();
+    };
+    if (ev && document.startViewTransition && document.body.dataset.theme !== th.id) {
+      document.documentElement.style.setProperty('--rx', ev.clientX + 'px');
+      document.documentElement.style.setProperty('--ry', ev.clientY + 'px');
+      document.startViewTransition(doIt);
+    } else doIt();
+  }
+  function renderThemeGrid(host) {
+    host.innerHTML = THEMES.map((t, i) => `
+      <button class="theme-card${D.profile.theme === t.id ? ' selected' : ''}" data-theme="${t.id}" style="--i:${i}">
+        <div class="theme-prev" style="background:${t.bg}">
+          <div class="sb" style="background:${t.sf}"></div>
+          <div class="main" style="background:${t.sf}">
+            <div class="line" style="background:${t.tx};opacity:.8;width:60%"></div>
+            <div class="line" style="background:${t.tx};opacity:.3;width:80%"></div>
+            <div class="line" style="background:${t.ac};width:35%"></div>
+          </div>
+          <div class="ring-dot" style="border-color:${t.ac};border-right-color:${t.a2}"></div>
+        </div>
+        <div class="theme-name">${t.name}<span class="tick">${CHECK}</span></div>
+      </button>`).join('');
+    $$('.theme-card', host).forEach((c) => c.addEventListener('click', (e) => {
+      D.profile.theme = c.dataset.theme;
+      $$('.theme-card').forEach((x) => x.classList.toggle('selected', x.dataset.theme === D.profile.theme));
+      applyTheme(D.profile.theme, e);
+      save();
+    }));
+  }
+
+  // ---------------- day and night ----------------
+  // From 7pm to 6am the skies show a moon and stars instead of the sun.
+  const isNight = (d = new Date()) => d.getHours() >= 19 || d.getHours() < 6;
+  function updateDayPhase() {
+    const night = isNight();
+    if (document.body.classList.contains('is-night') !== night) document.body.classList.toggle('is-night', night);
+  }
+  function makeStars() {
+    $$('.stars').forEach((el) => {
+      if (el.childElementCount) return;
+      let h = '';
+      for (let i = 0; i < 46; i++) {
+        const x = (i * 37.7) % 100, y = ((i * 61.3) % 62), sz = 1 + ((i * 7) % 3), d = 2 + (i % 5);
+        h += `<i style="left:${x.toFixed(1)}%;top:${y.toFixed(1)}%;--s:${sz}px;--d:${d}s;--dl:${(-i * 0.37).toFixed(2)}s"></i>`;
+      }
+      el.innerHTML = h;
+    });
+  }
+
+  // little animated visitors for the garden
+  const BF_COLORS = [['#f9a8d4', '#ec4899'], ['#fde047', '#f59e0b'], ['#93c5fd', '#3b82f6'], ['#c4b5fd', '#8b5cf6'], ['#fdba74', '#ea580c']];
+  function butterflies(n, seed) {
+    let h = '';
+    for (let i = 0; i < n; i++) {
+      const k = hashStr(seed + i), [c1, c2] = BF_COLORS[k % BF_COLORS.length];
+      h += `<span class="bfly p${k % 3}" style="--dur:${16 + (k % 9)}s;--dl:${-(k % 13)}s"><svg viewBox="-12 -10 24 20"><g class="wl"><path d="M0 0C-3-9-12-9-11-3-10 1-4 2 0 0Z" fill="${c1}"/><path d="M0 0C-2 4-7 9-7 4-7 2-3 1 0 0Z" fill="${c2}"/></g><g class="wr"><path d="M0 0C3-9 12-9 11-3 10 1 4 2 0 0Z" fill="${c1}"/><path d="M0 0C2 4 7 9 7 4 7 2 3 1 0 0Z" fill="${c2}"/></g><rect x="-.8" y="-4" width="1.6" height="8" rx=".8" fill="#3b2a1a"/></svg></span>`;
+    }
+    return h;
+  }
+  function birds(n) {
+    let h = '';
+    for (let i = 0; i < n; i++) h += `<span class="bird" style="--top:${12 + i * 9}%;--dur:${22 + i * 7}s;--dl:${-i * 9}s;--sc:${1 - i * 0.18}"><svg viewBox="0 0 30 12"><path d="M1 8Q8 0 15 7Q22 0 29 8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`;
+    return h;
+  }
+  function fireflies(n) {
+    let h = '';
+    for (let i = 0; i < n; i++) h += `<i class="ffly" style="left:${(i * 29.3) % 92 + 4}%;top:${(i * 17.7) % 55 + 30}%;--dur:${5 + (i % 4)}s;--dl:${-i * 0.9}s"></i>`;
+    return h;
+  }
+
+  // ---------------- trees react to the mouse ----------------
+  // Brushing past a tree pushes it away from the side the mouse came from, then it springs back.
+  const mouse = { vx: 0 };
+  document.addEventListener('mousemove', (e) => { mouse.vx = mouse.vx * 0.6 + e.movementX * 0.4; }, { passive: true });
+  document.addEventListener('mouseover', (e) => {
+    const tree = e.target.closest && e.target.closest('svg.tree');
+    if (!tree || (e.relatedTarget && tree.contains(e.relatedTarget))) return;
+    const g = tree.querySelector('.shake');
+    if (!g) return;
+    const now = performance.now();
+    if (g._at && now - g._at < 280) return;
+    g._at = now;
+    const r = tree.getBoundingClientRect();
+    const dir = Math.abs(mouse.vx) > 0.6 ? Math.sign(mouse.vx) : (e.clientX < r.left + r.width / 2 ? 1 : -1);
+    const A = Math.min(14, 5 + Math.abs(mouse.vx) * 0.7) * dir;
+    if (g._anim) g._anim.cancel();
+    g._anim = g.animate([
+      { transform: 'rotate(0deg) skewX(0deg)' },
+      { transform: `rotate(${A}deg) skewX(${-A * 0.4}deg)`, offset: 0.18 },
+      { transform: `rotate(${-A * 0.55}deg) skewX(${A * 0.2}deg)`, offset: 0.42 },
+      { transform: `rotate(${A * 0.28}deg) skewX(0deg)`, offset: 0.64 },
+      { transform: `rotate(${-A * 0.1}deg) skewX(0deg)`, offset: 0.84 },
+      { transform: 'rotate(0deg) skewX(0deg)' },
+    ], { duration: 1100, easing: 'cubic-bezier(.2,.7,.3,1)' });
+  }, { passive: true });
+
+  // ---------------- navigation ----------------
+  let currentPage = 'timer';
+  function moveIndicator() {
+    const btn = $(`.nav-item[data-page="${currentPage}"]`);
+    $('#nav-indicator').style.transform = `translateY(${btn.offsetTop}px)`;
+  }
+  function go(page) {
+    if (page === currentPage) return;
+    const from = $(`#page-${currentPage}`), to = $(`#page-${page}`);
+    $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
+    currentPage = page;
+    moveIndicator();
+    from.classList.remove('active', 'enter');
+    from.classList.add('leave');
+    const left = from.id.slice(5);
+    setTimeout(() => { from.classList.remove('leave'); freePage(left); }, 280);
+    renderPage(page);
+    $$('.stagger.anim-done', to).forEach((el) => el.classList.remove('anim-done'));
+    to.classList.remove('enter');
+    void to.offsetWidth;
+    to.classList.add('active', 'enter');
+    to.scrollTop = 0;
+  }
+  // Pages are rebuilt every time you open them, so the big ones (hundreds of tree drawings)
+  // are emptied once you leave. This keeps memory down without changing what you see.
+  const HEAVY = {
+    timer: ['#week-plot'], stats: ['#stats-plot'], garden: ['#garden', '#garden-plot'],
+    trees: ['#collection', '#cases'], badges: ['#badge-cats'], history: ['#history-list'],
+  };
+  function freePage(p) {
+    if (p === currentPage) return;
+    (HEAVY[p] || []).forEach((sel) => { const el = $(sel); if (el) el.replaceChildren(); });
+  }
+  function renderPage(p) {
+    if (p === 'timer') renderTimerPage();
+    if (p === 'stats') renderStats(true);
+    if (p === 'garden') renderGarden();
+    if (p === 'trees') renderTrees();
+    if (p === 'history') renderHistory();
+    if (p === 'badges') renderBadges();
+    if (p === 'settings') renderSettings();
+  }
+
+  // ---------------- toasts, modals, tooltip, fx ----------------
+  function toast(msg, ms = 2600) {
+    const t = document.createElement('div');
+    t.className = 'toast';
+    t.innerHTML = msg;
+    $('#toast-host').appendChild(t);
+    setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 400); }, ms);
+  }
+  function modal({ title, body = '', html = '', extra = '', actions = [{ label: 'OK', primary: true }] }) {
+    return new Promise((resolve) => {
+      const back = document.createElement('div');
+      back.className = 'modal-back';
+      back.innerHTML = `<div class="modal">${html}<h2>${title}</h2>${body ? `<p>${body}</p>` : ''}${extra}<div class="m-actions"></div></div>`;
+      const row = $('.m-actions', back);
+      const close = (v) => {
+        const chk = $('input[type=checkbox]', back);
+        back.classList.add('closing'); setTimeout(() => back.remove(), 260);
+        resolve(extra ? { v, checked: !!(chk && chk.checked) } : v);
+      };
+      actions.forEach((a, i) => {
+        const b = document.createElement('button');
+        b.className = 'btn' + (a.primary ? ' primary' : '') + (a.danger ? ' danger' : '') + (a.ghost ? ' ghost' : '');
+        b.textContent = a.label;
+        b.onclick = () => close(a.value !== undefined ? a.value : i);
+        row.appendChild(b);
+      });
+      back.addEventListener('mousedown', (e) => { if (e.target === back) close(null); });
+      $('#modal-host').appendChild(back);
+      const handler = (e) => { if (e.key === 'Escape') { close(null); document.removeEventListener('keydown', handler); } };
+      document.addEventListener('keydown', handler);
+      setTimeout(() => { const p = $('.btn.primary, .btn.danger', back); if (p) p.focus(); }, 50);
+    });
+  }
+  const tip = $('#tooltip');
+  function showTip(html, e) {
+    tip.innerHTML = html;
+    tip.classList.add('show');
+    moveTip(e);
+  }
+  function moveTip(e) {
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    let x = e.clientX + 14, y = e.clientY - h - 12;
+    if (x + w > innerWidth - 8) x = e.clientX - w - 14;
+    if (y < 44) y = e.clientY + 18;
+    tip.style.left = x + 'px';
+    tip.style.top = y + 'px';
+  }
+  const hideTip = () => tip.classList.remove('show');
+
+  // particle canvas for leaf/sparkle bursts and confetti
+  const fx = $('#fx'), fctx = fx.getContext('2d');
+  let parts = [], fxRunning = false;
+  sizeFx();
+  // Once an entrance animation (pop-in, rise, grow-in...) has finished, switch it off. Its last frame
+  // matches the normal look, so nothing changes on screen, but Chromium can drop the extra layers it kept.
+  const ENTRY_ANIMS = new Set(['pop', 'rise', 'grow-in', 'ptIn', 'fadeUp', 'barIn']);
+  document.addEventListener('animationend', (e) => {
+    if (ENTRY_ANIMS.has(e.animationName) && e.target.classList) e.target.classList.add('anim-done');
+  }, { passive: true });
+  // while the window is minimised or hidden, pause decorative animations and drop cached resources
+  document.addEventListener('visibilitychange', () => {
+    document.body.classList.toggle('app-hidden', document.hidden);
+    if (document.hidden && window.api.trimMemory) window.api.trimMemory();
+    if (!document.hidden && D) { updateTimerUI(true); updateTodayHeader(); }
+  });
+  // the effects canvas is only full size while particles are flying, so it holds no memory when idle
+  function sizeFx() {
+    const w = fxRunning ? Math.round(innerWidth * devicePixelRatio) : 1, h = fxRunning ? Math.round(innerHeight * devicePixelRatio) : 1;
+    if (fx.width !== w) fx.width = w;
+    if (fx.height !== h) fx.height = h;
+  }
+  addEventListener('resize', () => { sizeFx(); moveIndicator(); positionSegs(); });
+  function burst(x, y, opts = {}) {
+    const n = opts.n || 40;
+    const colors = opts.colors || ['#4ade80', '#a3e635', '#fde047', '#ffffff'];
+    for (let i = 0; i < n; i++) {
+      const a = (opts.up ? -Math.PI / 2 : 0) + (Math.random() - 0.5) * (opts.up ? 2.2 : Math.PI * 2);
+      const v = (opts.speed || 6) * (0.4 + Math.random());
+      const shape = opts.shape ? (Array.isArray(opts.shape) ? opts.shape[i % opts.shape.length] : opts.shape) : (opts.leaf !== false && Math.random() < 0.6 ? 'leaf' : 'dot');
+      parts.push({ x: x + (opts.spread ? (Math.random() - 0.5) * opts.spread : 0), y: y + (opts.spreadY ? (Math.random() - 0.5) * opts.spreadY : 0), vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1, decay: (opts.decay || 0.008) + Math.random() * 0.012, r: (opts.size || 3) + Math.random() * 4, c: colors[i % colors.length], rot: Math.random() * 6, vr: (Math.random() - 0.5) * (opts.spin || 0.3), shape, glow: opts.glow, sway: opts.sway || 0, t: Math.random() * 6, g: opts.gravity ?? 0.12 });
+    }
+    if (!fxRunning) { fxRunning = true; sizeFx(); requestAnimationFrame(fxLoop); }
+  }
+  function fxLoop() {
+    const dpr = devicePixelRatio;
+    fctx.clearRect(0, 0, fx.width, fx.height);
+    parts = parts.filter((p) => p.life > 0);
+    for (const p of parts) {
+      p.vy += p.g; p.vx *= 0.985; p.vy *= 0.985; p.t += 0.08; p.x += p.vx + Math.sin(p.t) * p.sway; p.y += p.vy; p.life -= p.decay; p.rot += p.vr;
+      fctx.save();
+      fctx.globalAlpha = Math.max(0, Math.min(1, p.life * 1.5));
+      fctx.translate(p.x * dpr, p.y * dpr);
+      fctx.rotate(p.rot);
+      fctx.fillStyle = p.c; fctx.strokeStyle = p.c;
+      if (p.glow) { fctx.shadowColor = p.c; fctx.shadowBlur = 10 * dpr; }
+      drawParticle(p, p.r * dpr);
+      fctx.restore();
+    }
+    if (parts.length) requestAnimationFrame(fxLoop);
+    else { fxRunning = false; sizeFx(); }
+  }
+  function drawParticle(p, r) {
+    const c = fctx;
+    c.beginPath();
+    switch (p.shape) {
+      case 'leaf': c.ellipse(0, 0, r * 1.6, r * 0.8, 0, 0, Math.PI * 2); c.fill(); break;
+      case 'petal': c.moveTo(0, -r * 1.2); c.quadraticCurveTo(r * 1.3, 0, 0, r * 1.2); c.quadraticCurveTo(-r * 1.3, 0, 0, -r * 1.2); c.fill(); break;
+      case 'needle': c.lineWidth = Math.max(1, r * 0.35); c.lineCap = 'round'; c.moveTo(-r * 1.4, 0); c.lineTo(r * 1.4, 0); c.stroke(); break;
+      case 'drop': c.moveTo(0, -r * 1.3); c.quadraticCurveTo(r, r * 0.2, 0, r * 0.9); c.quadraticCurveTo(-r, r * 0.2, 0, -r * 1.3); c.fill(); break;
+      case 'bubble': c.lineWidth = Math.max(1, r * 0.25); c.arc(0, 0, r * 0.9, 0, Math.PI * 2); c.stroke(); break;
+      case 'star4': for (let k = 0; k < 8; k++) { const a = (k / 8) * Math.PI * 2, rr = k % 2 ? r * 0.35 : r * 1.3; c.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); } c.closePath(); c.fill(); break;
+      case 'star5': for (let k = 0; k < 10; k++) { const a = (k / 10) * Math.PI * 2 - Math.PI / 2, rr = k % 2 ? r * 0.55 : r * 1.4; c.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); } c.closePath(); c.fill(); break;
+      case 'snow': c.lineWidth = Math.max(1, r * 0.25); c.lineCap = 'round'; for (let k = 0; k < 3; k++) { const a = (k / 3) * Math.PI; c.moveTo(Math.cos(a) * r * 1.2, Math.sin(a) * r * 1.2); c.lineTo(-Math.cos(a) * r * 1.2, -Math.sin(a) * r * 1.2); } c.stroke(); break;
+      default: c.arc(0, 0, r * 0.7, 0, Math.PI * 2); c.fill();
+    }
+  }
+  // Particles each species gives off as a new part of it grows in (see Tree.GROW[..].fx).
+  const GROW_FX = {
+    leaves: (sp) => ({ shape: 'leaf', colors: [sp.leaf1, sp.leaf2, sp.hi], gravity: 0.05, sway: 0.6, speed: 2.4 }),
+    needles: (sp) => ({ shape: 'needle', colors: [sp.leaf1, sp.leaf2], gravity: 0.08, speed: 3, spin: 0.5 }),
+    maple: (sp) => ({ shape: 'star5', colors: [sp.leaf1, sp.leaf2, '#fde047'], gravity: 0.04, sway: 0.9, speed: 2.2, spin: 0.25 }),
+    snow: () => ({ shape: 'snow', colors: ['#ffffff', '#e0f2fe', '#bae6fd'], gravity: 0.02, sway: 0.7, speed: 1.6, decay: 0.006 }),
+    bubbles: (sp) => ({ shape: 'bubble', colors: [sp.hi, sp.leaf1, '#ffffff'], gravity: -0.035, sway: 0.5, speed: 1.4, up: true }),
+    apples: (sp) => ({ shape: ['dot', 'leaf'], colors: [sp.fruit, sp.leaf1], gravity: 0.14, speed: 3.5, size: 3.5 }),
+    petals: (sp) => ({ shape: 'petal', colors: [sp.leaf1, sp.hi, '#ffffff'], gravity: 0.025, sway: 1.1, speed: 1.8, spin: 0.15, decay: 0.005 }),
+    glints: () => ({ shape: 'star4', colors: ['#fde047', '#fff7cc', '#f59e0b'], gravity: 0, speed: 2.2, glow: true, decay: 0.018 }),
+    drops: (sp) => ({ shape: 'drop', colors: [sp.leaf1, '#bae6fd', sp.hi], gravity: 0.16, speed: 1.4, spin: 0 }),
+    redleaves: (sp) => ({ shape: 'leaf', colors: [sp.leaf1, sp.leaf2, '#fb923c'], gravity: 0.04, sway: 1, speed: 2.6, spin: 0.4 }),
+    stars: (sp) => ({ shape: 'star4', colors: [sp.hi, sp.leaf1, '#ffffff'], gravity: -0.01, speed: 1.6, glow: true, decay: 0.01 }),
+    embers: () => ({ shape: 'dot', colors: ['#fb923c', '#fde047', '#f43f5e'], gravity: -0.05, sway: 0.5, speed: 1.6, glow: true, up: true, size: 1.5 }),
+    aurora: () => ({ shape: 'star4', colors: ['#4ade80', '#22d3ee', '#a78bfa', '#f0abfc'], gravity: -0.015, sway: 0.6, speed: 2, glow: true }),
+    sunsparks: () => ({ shape: ['star4', 'dot'], colors: ['#fde047', '#fbbf24', '#ffffff'], gravity: 0.02, speed: 4.5, glow: true, decay: 0.016 }),
+    wisps: (sp) => ({ shape: 'dot', colors: [sp.glow || sp.leaf1, sp.hi, '#ffffff'], gravity: -0.03, sway: 0.9, speed: 1, glow: true, up: true, decay: 0.006 }),
+    cosmic: () => ({ shape: ['star4', 'star5', 'dot'], colors: ['#f0abfc', '#818cf8', '#fde68a', '#a5f3fc', '#ffffff'], gravity: -0.01, sway: 0.8, speed: 3, glow: true, spin: 0.2 }),
+  };
+  function growFx(species, count) {
+    const holder = $('#tree-holder');
+    if (!holder || currentPage !== 'timer' || document.hidden) return;
+    const sp = window.Tree.get(species), kind = window.Tree.growOf(species).fx;
+    const o = (GROW_FX[kind] || GROW_FX.leaves)(sp);
+    const r = holder.getBoundingClientRect();
+    burst(r.left + r.width / 2, r.top + r.height * 0.5, Object.assign({ n: 10 + count * 4, spread: r.width * 0.35, spreadY: r.height * 0.25 }, o));
+  }
+  function flyCoins(fromEl, amount) {
+    const pill = $('#coin-pill');
+    const pr = pill.getBoundingClientRect();
+    const fr = fromEl.getBoundingClientRect();
+    const n = amount <= 3 ? amount : Math.min(10, Math.max(4, Math.round(amount / 2)));
+    for (let i = 0; i < n; i++) {
+      const c = document.createElement('div');
+      c.className = 'coin flying-coin';
+      const sx = fr.left + fr.width / 2 + (Math.random() - 0.5) * 80, sy = fr.top + fr.height * 0.45 + (Math.random() - 0.5) * 60;
+      c.style.left = sx + 'px'; c.style.top = sy + 'px';
+      c.style.transform = 'scale(0)';
+      document.body.appendChild(c);
+      setTimeout(() => { c.style.transform = 'scale(1.2)'; }, 20 + i * 60);
+      setTimeout(() => {
+        c.style.transform = `translate(${pr.left + 8 - sx}px, ${pr.top + 4 - sy}px) scale(.8)`;
+      }, 260 + i * 70);
+      setTimeout(() => {
+        c.remove();
+        pill.classList.remove('bump'); void pill.offsetWidth; pill.classList.add('bump');
+      }, 1150 + i * 70);
+    }
+    setTimeout(() => renderCoins(), 1150);
+  }
+  function renderCoins(instant) {
+    const el = $('#coin-count');
+    if (instant) { el.dataset.val = D.coins; el.textContent = D.coins; return; }
+    animateNumber(el, D.coins, (v) => Math.round(v).toLocaleString(), 700);
+  }
+
+  // ---------------- timer ----------------
+  const T = { state: 'idle', subject: null, raf: 0, lastSec: -1 };
+  // D.active = { subject, startedAt, segStart, acc, species, treeId, rooted, bonuses }
+  function elapsedSec() {
+    const a = D.active;
+    if (!a) return 0;
+    return (a.acc + (a.segStart ? Date.now() - a.segStart : 0)) / 1000;
+  }
+  function persistActive() {
+    if (!D.active) return;
+    // store as paused so time while the app is closed doesn't count
+    if (D.active.segStart) { D.active.acc += Date.now() - D.active.segStart; D.active.segStart = Date.now(); }
+  }
+
+  let treeSvg = null;
+  function mountTree(species) {
+    T.shown = undefined;
+    $('#tree-holder').innerHTML = window.Tree.build(species, 'main');
+    treeSvg = $('#tree-holder .tree');
+    $('#tree-holder').classList.add('alive');
+  }
+
+  function buildOdometer() {
+    const od = $('#odometer');
+    // the tens of minutes and seconds only go up to 5
+    const maxes = [9, 9, null, 5, 9, null, 5, 9];
+    od.innerHTML = maxes.map((m) => m === null ? '<span class="sep">:</span>' :
+      `<span class="digit"><span class="roll" data-max="${m}">${Array.from({ length: m + 1 }, (_, n) => `<span>${n}</span>`).join('')}<span>0</span></span></span>`).join('');
+  }
+  // Each digit rolls upward; wrapping to 0 rolls onto a spare "0" then snaps back unseen.
+  function setOdometer(str) {
+    const rolls = $$('#odometer .roll');
+    str.replace(/:/g, '').split('').forEach((ch, i) => {
+      const r = rolls[i];
+      if (!r) return;
+      const m = +r.dataset.max, count = m + 2;
+      const d = Math.min(+ch, m), prev = r._d === undefined ? d : r._d;
+      if (d === prev && r.style.transform) return;
+      r._d = d;
+      const pos = (k) => `translateY(-${(k * 100) / count}%)`;
+      clearTimeout(r._t);
+      if (d === 0 && prev === m) {
+        r.classList.remove('snap');
+        r.style.transform = pos(m + 1);
+        r._t = setTimeout(() => { r.classList.add('snap'); r.style.transform = pos(0); void r.offsetWidth; r.classList.remove('snap'); }, 600);
+      } else if (d < prev) {
+        r.classList.add('snap'); r.style.transform = pos(d); void r.offsetWidth; r.classList.remove('snap');
+      } else r.style.transform = pos(d);
+    });
+  }
+
+  function setTimerClass() {
+    const card = $('#page-timer');
+    card.classList.toggle('idle', T.state === 'idle');
+    card.classList.toggle('running', T.state === 'running');
+    card.classList.toggle('paused', T.state === 'paused');
+    $('#start-label').textContent = T.state === 'running' ? 'Pause' : T.state === 'paused' ? 'Resume' : 'Start';
+    $('#subject-zone').classList.toggle('collapsed', T.state !== 'idle');
+    $('#greeting-sub').textContent = T.state === 'idle' ? 'Pick a subject and start the stopwatch.' : T.state === 'paused' ? 'Paused. Take a breather, then jump back in.' : 'Stay focused. Your tree is growing.';
+    const as = $('#active-subject');
+    as.classList.toggle('show', T.state !== 'idle');
+    if (D.active) {
+      as.style.setProperty('--c', colorOf(D.active.subject));
+      $('.name', as).textContent = D.active.subject;
+      $('#state-tag').textContent = T.state === 'paused' ? 'Paused' : 'Studying';
+    }
+  }
+
+  function setTreeStatus(txt) {
+    const el = $('#tree-status');
+    if (el.textContent === txt) return;
+    el.textContent = txt;
+    el.classList.remove('swap'); void el.offsetWidth; el.classList.add('swap');
+  }
+
+  const CIRC = 2 * Math.PI * 132;
+  function updateTimerUI(force) {
+    const sec = elapsedSec();
+    const whole = Math.floor(sec);
+    if (!force && whole === T.lastSec) return;
+    T.lastSec = whole;
+    // minimised (e.g. the mini player is up): keep counting and paying coins, but skip redrawing
+    if (document.hidden && !force) { checkMilestones(sec); pushMini(); return; }
+    setOdometer(fmtHMS(whole));
+    const rootP = Math.min(1, sec / ROOT_SEC);
+    const ring = $('.ring');
+    // first lap: the 10 minute rooting countdown; after that: one lap per hour
+    let lap;
+    if (sec < ROOT_SEC) lap = rootP;
+    else lap = ((sec - ROOT_SEC) % 3600) / 3600;
+    ring.classList.toggle('rooted', sec >= ROOT_SEC);
+    // when a lap wraps round, jump instead of animating backwards
+    const wrapped = T.lastLap !== undefined && lap < T.lastLap - 0.3;
+    T.lastLap = lap;
+    if (wrapped || force) ring.classList.add('snap');
+    $('#ring-prog').style.strokeDashoffset = (CIRC * (1 - (sec >= ROOT_SEC ? 1 : lap))).toFixed(1);
+    $('#ring-hour').style.strokeDashoffset = (CIRC * (1 - (sec >= ROOT_SEC ? lap : 0))).toFixed(1);
+    $('#ring-hour').style.opacity = sec >= ROOT_SEC ? 0.95 : 0;
+    $('#ring-knob').style.transform = `rotate(${(lap * 360).toFixed(2)}deg)`;
+    $('#root-fill').style.transform = `scaleX(${rootP.toFixed(4)})`;
+    if (ring.classList.contains('snap')) { void ring.getBoundingClientRect(); requestAnimationFrame(() => ring.classList.remove('snap')); }
+    const cap = $('#clock-caption');
+    if (T.state === 'idle') cap.textContent = T.subject ? `Ready: ${T.subject}` : 'Pick a subject to begin';
+    else if (sec < ROOT_SEC) cap.textContent = `${fmtMS(ROOT_SEC - sec)} until your tree takes root`;
+    else {
+      const next = 3600 - (sec % 3600);
+      cap.textContent = next <= 600 ? `Hour bonus in ${fmtMS(next)}` : `+1 coin every minute · ${D.active.coins || 0} so far`;
+    }
+    if (treeSvg && D.active) {
+      const g = window.Tree.growthFor(sec);
+      const shown = window.Tree.setGrowth(treeSvg, g.p, g.g);
+      if (T.shown !== undefined && shown > T.shown && T.state === 'running') growFx(D.active.species, shown - T.shown);
+      T.shown = shown;
+    }
+    if (T.state !== 'idle') {
+      if (sec < 20) setTreeStatus(T.state === 'paused' ? 'Paused. Your seed is waiting' : 'A seed has been planted');
+      else if (sec < ROOT_SEC * 0.4) setTreeStatus(T.state === 'paused' ? 'Paused. Your sprout is waiting' : 'Sprouting...');
+      else if (sec < ROOT_SEC) setTreeStatus(T.state === 'paused' ? 'Paused. Your sapling is waiting' : 'Your sapling is growing');
+      else if (sec < 3600) setTreeStatus('Rooted in your garden. Keep going to help it grow');
+      else setTreeStatus('A mighty tree. Look at it go');
+    }
+    checkMilestones(sec);
+    updateTodayHeader();
+    pushMini();
+  }
+
+  function checkMilestones(sec) {
+    const a = D.active;
+    if (!a || T.state === 'idle') return;
+    const target = coinsFor(sec, a.species);
+    if (target <= (a.coins || 0)) {
+      if (a.rooted) { const t = D.trees.find((x) => x.id === a.treeId); if (t) t.duration = Math.floor(sec); }
+      return;
+    }
+    const earned = target - (a.coins || 0);
+    const hours = Math.floor(sec / 3600);
+    const hourBonus = hours > (a.hours || 0);
+    a.hours = hours;
+    a.milestones = Math.floor(sec / 60); // kept so older versions can still read an unfinished session
+    D.coins += earned;
+    a.coins = (a.coins || 0) + earned;
+    const holder = $('#tree-holder');
+    const onTimer = currentPage === 'timer' && !document.hidden;
+    if (!a.rooted) {
+      a.rooted = true;
+      D.trees.push({ id: a.treeId, species: a.species, subject: a.subject, date: a.startedAt, duration: Math.floor(sec), sessionId: a.sessionId });
+      if (onTimer) {
+        const r = holder.getBoundingClientRect();
+        burst(r.left + r.width / 2, r.top + r.height * 0.4, { n: 60, up: true, speed: 8 });
+        treeSvg.classList.remove('celebrate'); void treeSvg.getBBox(); treeSvg.classList.add('celebrate');
+      }
+      toast(`<span class="coin"></span> Your tree took root! +${earned} coins`);
+    } else if (hourBonus) {
+      if (onTimer) { const r = holder.getBoundingClientRect(); burst(r.left + r.width / 2, r.top + r.height * 0.4, { n: 40, up: true, speed: 7, colors: ['#fde047', '#fbbf24', '#ffffff'] }); }
+      toast(`<span class="coin"></span> Hour bonus! +${earned} coins`);
+    }
+    const t = D.trees.find((x) => x.id === a.treeId);
+    if (t) t.duration = Math.floor(sec);
+    save();
+    if (onTimer) flyCoins(holder, earned); else renderCoins();
+    checkAchievements();
+  }
+
+  function loop() {
+    updateTimerUI();
+    T.raf = setTimeout(loop, 200);
+  }
+
+  function start() {
+    if (T.state === 'running') return pause();
+    if (T.state === 'paused') return resume();
+    if (!T.subject) {
+      const z = $('#subject-chips');
+      z.classList.remove('shake'); void z.offsetWidth; z.classList.add('shake');
+      $('#subject-hint').textContent = 'Pick a subject first';
+      $('#subject-hint').classList.add('warn');
+      return;
+    }
+    if (!T.tree || !owns(T.tree)) {
+      const z = $('#tree-chips');
+      z.classList.remove('shake'); void z.offsetWidth; z.classList.add('shake');
+      $('#tree-hint').textContent = 'Pick a tree first';
+      $('#tree-hint').classList.add('warn');
+      return;
+    }
+    const species = T.tree;
+    D.selectedTree = species;
+    D.active = { subject: T.subject, startedAt: new Date().toISOString(), segStart: Date.now(), acc: 0, species, treeId: uid(), sessionId: uid(), rooted: false, milestones: 0, coins: 0 };
+    T.state = 'running';
+    showPlot(false);
+    mountTree(species);
+    window.Tree.setGrowth(treeSvg, 0, 0);
+    requestAnimationFrame(() => updateTimerUI(true));
+    setTimerClass();
+    const r = $('#tree-holder').getBoundingClientRect();
+    burst(r.left + r.width / 2, r.bottom - r.height * 0.1, { n: 18, up: true, speed: 4, colors: ['#a0703f', '#c79a64', '#6cc46f'] });
+    save();
+    if (D.profile.autoMini) setTimeout(() => window.api.openMini(), 400);
+  }
+  function pause() {
+    const a = D.active; if (!a || !a.segStart) return;
+    a.acc += Date.now() - a.segStart; a.segStart = null;
+    T.state = 'paused'; setTimerClass(); updateTimerUI(true); save();
+  }
+  function resume() {
+    const a = D.active; if (!a) return;
+    a.segStart = Date.now();
+    T.state = 'running'; setTimerClass(); updateTimerUI(true); save();
+  }
+  function finishActive() {
+    clearTimeout(T.raf);
+    const a = D.active;
+    D.active = null;
+    T.state = 'idle';
+    T.lastSec = -1;
+    setTimerClass();
+    loop();
+    return a;
+  }
+  function witherTree() {
+    if (!treeSvg) return;
+    treeSvg.classList.add('dying');
+    $('#tree-holder').classList.remove('alive');
+  }
+  function recordSession(a, total, cancelled) {
+    const rec = { id: a.sessionId || uid(), subject: a.subject, duration: total, date: a.startedAt, tree: a.species, outcome: a.rooted ? 'grown' : 'withered', coins: a.coins || 0 };
+    if (cancelled) rec.cancelled = true;
+    D.sessions.push(rec);
+    return rec;
+  }
+  function resetStage(delay) {
+    setTimeout(() => {
+      if (T.state !== 'idle') return;
+      $('#tree-holder').innerHTML = '';
+      treeSvg = null;
+      previewTree();
+      updateTimerUI(true);
+    }, delay);
+  }
+
+  async function stop() {
+    if (T.state === 'idle') return;
+    const sec = elapsedSec();
+    if (sec < 10) {
+      const v = await modal({ title: 'Too short to save', body: 'Sessions under 10 seconds aren\'t saved. Discard it?', actions: [{ label: 'Keep going', ghost: true, value: false }, { label: 'Discard', primary: true, value: true }] });
+      if (v) cancel(true);
+      return;
+    }
+    const wasRunning = T.state === 'running';
+    if (wasRunning) pause();
+    const rooted = D.active.rooted;
+    const ok = await modal({
+      title: 'Finish this session?',
+      body: rooted ? `You studied ${D.active.subject} for ${fmtDur(sec)}. It'll be saved and your tree stays in your garden.`
+        : `You studied ${D.active.subject} for ${fmtDur(sec)}. The time will be saved, but your sapling needed 10 minutes to take root, so it will wither.`,
+      actions: [{ label: 'Keep studying', ghost: true, value: false }, { label: 'Finish & save', primary: true, value: true }],
+    });
+    if (!ok) { if (wasRunning) resume(); return; }
+    const total = Math.floor(elapsedSec());
+    const a = finishActive();
+    recordSession(a, total, false);
+    if (a.rooted) {
+      const t = D.trees.find((x) => x.id === a.treeId);
+      if (t) t.duration = total;
+      const r = $('#tree-holder').getBoundingClientRect();
+      burst(r.left + r.width / 2, r.top + r.height * 0.4, { n: 50, up: true, speed: 7, colors: ['#fde047', '#fbbf24', '#ffffff', colorOf(a.subject)] });
+      setTreeStatus('Planted in your garden');
+      toast(`Saved ${fmtDur(total)} of ${esc(a.subject)}. Your tree is in the garden 🌳`);
+    } else {
+      witherTree();
+      setTreeStatus('Your sapling withered. Stay 10 minutes next time');
+      toast(`Saved ${fmtDur(total)} of ${esc(a.subject)}`);
+    }
+    save(true);
+    window.api.closeMini();
+    renderToday();
+    resetStage(a.rooted ? 3200 : 3400);
+    setTimeout(() => checkAchievements(), 1400);
+  }
+
+  async function cancel(skipConfirm) {
+    if (T.state === 'idle') return;
+    const wasRunning = T.state === 'running';
+    const rooted = D.active.rooted;
+    if (!skipConfirm) {
+      if (wasRunning) pause();
+      const ok = await modal({
+        title: 'Cancel this session?',
+        body: rooted ? 'This session\'s time won\'t be saved. Your tree already took root, so it stays in your garden.'
+          : 'This session\'s time won\'t be saved and your sapling will die.',
+        actions: [{ label: 'Keep studying', ghost: true, value: false }, { label: 'Cancel session', danger: true, value: true }],
+      });
+      if (!ok) { if (wasRunning) resume(); return; }
+    }
+    const total = Math.floor(elapsedSec());
+    const a = finishActive();
+    // keep a record (not counted in stats) so it shows in history and can be deleted
+    if (total >= 10) recordSession(a, total, true);
+    if (!a.rooted) {
+      witherTree();
+      setTreeStatus('Your sapling died. No coins this time');
+    } else setTreeStatus('Session cancelled. Your tree stays in the garden');
+    save(true);
+    renderToday();
+    window.api.closeMini();
+    resetStage(3400);
+  }
+
+  function renderSubjectChips() {
+    const host = $('#subject-chips');
+    const list = activeSubjects();
+    if (!list.length) {
+      host.innerHTML = '<span class="muted">No subjects yet. Add some in Settings.</span>';
+      return;
+    }
+    if (T.subject && !(subj(T.subject) && !subj(T.subject).archived)) T.subject = null;
+    host.innerHTML = list.map((s, i) => `<button class="chip${T.subject === s.name ? ' selected' : ''}" style="--c:${s.color};--i:${i}" data-s="${esc(s.name)}"><span class="dot"></span>${esc(s.name)}</button>`).join('');
+    $$('.chip', host).forEach((c) => c.addEventListener('click', () => {
+      T.subject = c.dataset.s;
+      $$('.chip', host).forEach((x) => x.classList.toggle('selected', x === c));
+      $('#subject-hint').textContent = 'Press start when you\'re ready';
+      $('#subject-hint').classList.remove('warn');
+      $('.clock-wrap').style.setProperty('--accent', colorOf(T.subject));
+      updateTimerUI(true);
+    }));
+  }
+
+  function renderTreeChips(keepScroll) {
+    const host = $('#tree-chips');
+    if (!T.tree || !owns(T.tree)) T.tree = owns(D.selectedTree) ? D.selectedTree : 'oak';
+    const list = window.Tree.SPECIES.filter((x) => owns(x.id)).sort(treeOrder);
+    host.innerHTML = list.map((sp, i) => {
+      const r = window.Tree.RARITIES[sp.rarity];
+      return `<button class="tree-chip${T.tree === sp.id ? ' selected' : ''}${isFav(sp.id) ? ' fav' : ''}" style="--rc:${r.color};--i:${i}" data-t="${sp.id}" title="${esc(sp.name)} · ${r.name}${r.boost ? ` · ${pct(r.boost)} coins` : ''}">
+        <span class="tc-img">${staticTree(sp.id, 3 * 3600, false, 'tc' + sp.id)}</span><span class="tc-name">${esc(sp.name)}</span>${r.boost ? `<span class="tc-boost">${pct(r.boost)}</span>` : ''}${starHtml(sp.id)}</button>`;
+    }).join('');
+    paintTrees(host);
+    $$('.fav-star', host).forEach((st) => st.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const on = toggleFav(st.dataset.fav);
+      toast(on ? `${esc(window.Tree.get(st.dataset.fav).name)} added to favourites` : `${esc(window.Tree.get(st.dataset.fav).name)} removed from favourites`);
+      const keep = host.scrollLeft;
+      renderTreeChips(true);
+      host.scrollLeft = on ? 0 : keep;
+      const again = $(`.fav-star[data-fav="${st.dataset.fav}"]`, host);
+      if (again) again.classList.add('pop');
+    }));
+    // keep the selected tree in view (favourites come first, so it may sit further along)
+    if (!keepScroll) requestAnimationFrame(() => { const sel = $('.tree-chip.selected', host); if (sel && sel.offsetLeft + sel.offsetWidth > host.clientWidth) host.scrollLeft = sel.offsetLeft - 8; });
+    $$('.tree-chip', host).forEach((c) => c.addEventListener('click', () => {
+      T.tree = c.dataset.t;
+      D.selectedTree = T.tree; save();
+      $$('.tree-chip', host).forEach((x) => x.classList.toggle('selected', x === c));
+      const sp = window.Tree.get(T.tree), b = boostOf(T.tree);
+      $('#tree-hint').textContent = b ? `${sp.name}: ${pct(b)} coins` : sp.name;
+      $('#tree-hint').classList.remove('warn');
+      previewTree();
+    }));
+    const sp = window.Tree.get(T.tree), b = boostOf(T.tree);
+    $('#tree-hint').textContent = b ? `${sp.name}: ${pct(b)} coins` : 'Last session\'s tree is picked for you';
+    $('#tree-hint').classList.remove('warn');
+  }
+  // while idle, show the chosen tree as a seedling preview in the stage
+  // while idle, the stage shows this week's forest instead of a tree
+  function previewTree() {
+    if (T.state !== 'idle' || treeSvg) return;
+    showPlot(true);
+  }
+
+  function todaySessions() {
+    const k = dayKey(new Date());
+    return D.sessions.filter((s) => counted(s) && dayKey(new Date(s.date)) === k).sort((a, b) => new Date(b.date) - new Date(a.date));
+  }
+  function streakDays() {
+    const days = new Set(D.sessions.filter(counted).map((s) => dayKey(new Date(s.date))));
+    let d = new Date(), n = 0;
+    if (!days.has(dayKey(d)) && !(D.active)) d = addDays(d, -1);
+    while (days.has(dayKey(d)) || (n === 0 && D.active && dayKey(d) === dayKey(new Date()))) { n++; d = addDays(d, -1); }
+    return n;
+  }
+  function updateTodayHeader() {
+    const tot = todaySessions().reduce((a, s) => a + s.duration, 0) + (D.active ? elapsedSec() : 0);
+    $('#today-total').textContent = fmtDur(tot);
+  }
+  function sessRow(s, i, opts = {}) {
+    const d = new Date(s.date), end = new Date(d.getTime() + s.duration * 1000);
+    const w = isWithered(s);
+    const tag = s.cancelled ? '<span class="tag cancel">Cancelled</span>' : w ? '<span class="tag dead">Withered</span>' : '';
+    return `<div class="sess-row with-tree${s.cancelled ? ' is-cancelled' : ''}" style="--c:${colorOf(s.subject)};--i:${i}" data-id="${s.id}">
+      <span class="thumb">${staticTree(treeOfSession(s), s.duration, w, 'h' + s.id)}</span><span class="nm"><i class="dot"></i>${esc(s.subject)}${tag}${s.coins ? `<span class="tag coins"><span class="coin sm"></span>${s.coins}</span>` : ''}</span>
+      <span class="t">${fmtTime(d)} – ${fmtTime(end)}</span>
+      <span class="d">${fmtDur(s.duration)}${opts.del !== false ? `<button class="del" title="Delete session">${XICON}</button>` : ''}</span></div>`;
+  }
+  // Deleting a session also removes its garden tree, its withered count, and optionally its coins.
+  async function deleteSession(s) {
+    const lines = [`${esc(s.subject)}, ${fmtDur(s.duration)} on ${new Date(s.date).toLocaleDateString()}.`];
+    const tree = D.trees.find((t) => t.sessionId === s.id);
+    if (tree) lines.push('Its tree will be removed from your garden.');
+    const extra = s.coins ? `<label class="m-check"><input type="checkbox" checked> Also take back the ${s.coins} coins it earned</label>` : '';
+    const r = await modal({ title: 'Delete this session?', body: lines.join(' '), extra, actions: [{ label: 'Keep', ghost: true, value: false }, { label: 'Delete', danger: true, value: true }] });
+    const ok = extra ? r && r.v : r;
+    const takeCoins = extra ? r && r.checked : false;
+    if (!ok) return false;
+    D.sessions = D.sessions.filter((x) => x.id !== s.id);
+    if (tree) D.trees = D.trees.filter((t) => t !== tree);
+    if (s.coins && takeCoins) { D.coins = Math.max(0, D.coins - s.coins); renderCoins(); }
+    save();
+    return true;
+  }
+  function bindDeletes(host, after) {
+    $$('.del', host).forEach((b) => b.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const row = b.closest('.sess-row');
+      const s = D.sessions.find((x) => x.id === row.dataset.id);
+      if (!s) return;
+      if (!(await deleteSession(s))) return;
+      row.style.height = row.offsetHeight + 'px';
+      row.classList.add('removing');
+      setTimeout(() => after && after(), 450);
+    }));
+  }
+  // ---- isometric forest plot: one tree per session, like the Forest app ----
+  const PLOT_MAX = 600;
+  function hashStr(t) { let h = 2166136261; for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+  function sessionTip(x) {
+    const sp = window.Tree.get(treeOfSession(x));
+    const d = new Date(x.date), en = new Date(+d + x.duration * 1000);
+    const state = isWithered(x) ? 'Withered' : x.tree ? 'Grown' : 'Logged before trees were tracked';
+    return `<div class="tt-title">${esc(x.subject)}</div>
+      <div class="tt-row"><span>Date</span><b>${d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</b></div>
+      <div class="tt-row"><span>Time</span><b>${fmtTime(d)} – ${fmtTime(en)}</b></div>
+      <div class="tt-row"><span>Duration</span><b>${fmtDur(x.duration)}</b></div>
+      <div class="tt-row"><span>Tree</span><b>${x.tree ? esc(sp.name) : 'Oak (older session)'}</b></div>
+      <div class="tt-row"><span>Subject</span><b><i style="--c:${colorOf(x.subject)}"></i>${esc(x.subject)}</b></div>
+      ${isWithered(x) || x.coins ? `<div class="tt-row"><span>Result</span><b>${state}${x.coins ? ` · +${x.coins} coins` : ''}</b></div>` : ''}`;
+  }
+  function renderPlot(host, list, opts = {}) {
+    const shown = list.length > PLOT_MAX ? list.slice(-PLOT_MAX) : list;
+    const n = Math.max(opts.min || 4, Math.ceil(Math.sqrt(shown.length * 1.15)));
+    const TW = 64, TH = 32, DEPTH = 26, TREE_W = 58, TREE_H = 72;
+    const W = n * TW, top = TREE_H - 8, H = top + n * TH + DEPTH + 6;
+    const cx0 = W / 2;
+    const pos = (i, j) => [cx0 + (i - j) * TW / 2, top + (i + j + 1) * TH / 2];
+    // scatter sessions over the cells in a stable order
+    const cells = [];
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) cells.push([i, j]);
+    const seed = opts.seed || 'plot';
+    cells.sort((a, b) => hashStr(seed + a) - hashStr(seed + b));
+    const placed = shown.map((x, k) => ({ x, cell: cells[k] }));
+    const empties = cells.slice(shown.length);
+    let tiles = '';
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      const [x, y] = pos(i, j);
+      tiles += `<polygon points="${x},${y - TH / 2} ${x + TW / 2},${y} ${x},${y + TH / 2} ${x - TW / 2},${y}" class="tile ${(i + j) % 2 ? 't1' : 't2'}"/>`;
+    }
+    // little flowers and grass tufts on empty cells
+    let deco = '';
+    empties.forEach(([i, j], k) => {
+      const h = hashStr(seed + 'd' + i + ',' + j);
+      if (h % 3) return;
+      const [x, y] = pos(i, j);
+      const ox = (h % 17) - 8, oy = ((h >> 5) % 9) - 4;
+      deco += h % 2 ? `<g class="deco" transform="translate(${x + ox},${y + oy})"><path d="M-4 0 q2 -7 1 -9 M0 0 q0 -8 1 -10 M4 0 q-1 -6 0 -8" class="tuft"/></g>`
+        : `<g class="deco" transform="translate(${x + ox},${y + oy})"><circle r="2.6" cy="-3" fill="${['#fde047', '#f9a8d4', '#ffffff', '#c4b5fd'][h % 4]}"/><circle r="1.1" cy="-3" fill="#f59e0b"/></g>`;
+    });
+    const trees = placed.slice().sort((a, b) => (a.cell[0] + a.cell[1]) - (b.cell[0] + b.cell[1]) || a.cell[0] - b.cell[0]).map(({ x, cell }, k) => {
+      const [px, py] = pos(cell[0], cell[1]);
+      const svg = window.Tree.build(treeOfSession(x), (opts.key || 'p') + x.id)
+        .replace('<svg class="tree', `<svg x="${px - TREE_W / 2}" y="${py - TREE_H + 6}" width="${TREE_W}" height="${TREE_H}" data-sec="${Math.round(x.duration)}"${isWithered(x) ? ' data-withered="1"' : ''} data-fixed="1" class="tree static`)
+        .replace('viewBox="0 0 200 240"', 'viewBox="14 0 172 220"');
+      return `<g class="pt" data-id="${x.id}" style="--d:${Math.min(k, 120) * 14}ms">${svg}</g>`;
+    }).join('');
+    const y0 = top + n * TH / 2, yb = top + n * TH;
+    host.innerHTML = `<svg class="plot" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+      <polygon points="0,${y0} ${cx0},${yb} ${cx0},${yb + DEPTH} 0,${y0 + DEPTH}" class="side-l"/>
+      <polygon points="${W},${y0} ${cx0},${yb} ${cx0},${yb + DEPTH} ${W},${y0 + DEPTH}" class="side-r"/>
+      <polygon points="0,${y0} ${cx0},${yb} ${cx0},${yb + 6} 0,${y0 + 6}" class="lip-l"/>
+      <polygon points="${W},${y0} ${cx0},${yb} ${cx0},${yb + 6} ${W},${y0 + 6}" class="lip-r"/>
+      <g class="tiles">${tiles}</g><g>${deco}</g><g class="trees">${trees}</g></svg>`;
+    paintTrees(host);
+    const byId = new Map(shown.map((x) => [String(x.id), x]));
+    $$('.pt', host).forEach((g) => {
+      const x = byId.get(g.dataset.id);
+      g.addEventListener('mouseenter', (ev) => showTip(sessionTip(x), ev));
+      g.addEventListener('mousemove', moveTip);
+      g.addEventListener('mouseleave', hideTip);
+    });
+    return { shown: shown.length, total: list.length };
+  }
+
+  const W = { offset: 0 };
+  function renderToday() {
+    updateTodayHeader();
+    const st = streakDays();
+    $('#streak').textContent = `${st} day${st === 1 ? '' : 's'}`;
+    renderWeek();
+  }
+  function weekRange() {
+    const start = addDays(startOfWeek(new Date()), -7 * W.offset);
+    return [start, addDays(start, 7)];
+  }
+  function renderWeek(dir) {
+    const [start, end] = weekRange();
+    const e = addDays(end, -1);
+    const lbl = $('#week-label');
+    lbl.textContent = W.offset === 0 ? 'This week' : W.offset === 1 ? 'Last week' : `${start.getDate()} ${MONTHS[start.getMonth()]} – ${e.getDate()} ${MONTHS[e.getMonth()]}`;
+    lbl.className = dir ? (dir > 0 ? 'in-r' : 'in-l') : '';
+    $('#week-next').disabled = W.offset === 0;
+    const list = sessionsIn(start, end).sort((a, b) => new Date(a.date) - new Date(b.date));
+    const total = list.reduce((a, x) => a + x.duration, 0);
+    renderPlot($('#week-plot'), list, { seed: 'w' + dayKey(start), key: 'wk', min: 5 });
+    if (T.state === 'idle' && $('#stage').classList.contains('show-plot')) {
+      const grown = list.filter((x) => !isWithered(x)).length, dead = list.length - grown;
+      const when = W.offset === 0 ? 'This week' : W.offset === 1 ? 'Last week' : 'That week';
+      setTreeStatus(list.length ? `${when}: ${grown} tree${grown === 1 ? '' : 's'}${dead ? `, ${dead} withered` : ''} · ${fmtDur(total)}` : `${when}: no trees yet. Start the timer to plant one`);
+    }
+  }
+  function showPlot(on) {
+    $('#stage').classList.toggle('show-plot', on);
+    if (on) renderWeek();
+  }
+
+  function renderTimerPage() {
+    const h = new Date().getHours();
+    const part = h < 5 ? 'Up late' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+    $('#greeting').textContent = D.profile.name ? `${part}, ${D.profile.name}` : part;
+    renderSubjectChips();
+    renderTreeChips();
+    renderToday();
+    setTimerClass();
+    if (T.state === 'idle') previewTree();
+    updateTimerUI(true);
+  }
+
+  // ---------------- mini player bridge ----------------
+  let miniOpen = false;
+  let miniVars = null; // theme colours for the mini player, worked out once per theme
+  function pushMini() {
+    if (!miniOpen) return;
+    const sec = elapsedSec();
+    if (!miniVars) { const cs = getComputedStyle(document.body); miniVars = ['--bg', '--surface', '--surface2', '--text', '--muted', '--accent', '--accent2', '--on-accent', '--border'].reduce((o, k) => (o[k] = cs.getPropertyValue(k).trim(), o), {}); }
+    window.api.sendMiniState({
+      state: T.state,
+      sec,
+      subject: D.active ? D.active.subject : '',
+      color: D.active ? colorOf(D.active.subject) : '#4ade80',
+      species: D.active ? D.active.species : 'oak',
+      rooted: D.active ? D.active.rooted : false,
+      vars: miniVars,
+    });
+  }
+  window.api.on('mini:command', (cmd) => {
+    if (cmd === 'ready') { miniOpen = true; pushMini(); }
+    if (cmd === 'toggle') start();
+    if (cmd === 'stop') { window.api.miniCommand('expand'); setTimeout(stop, 200); }
+  });
+  window.api.on('mini:closed', () => { miniOpen = false; });
+
+  // ---------------- stats ----------------
+  const S = { period: 'day', anchor: startOfDay(new Date()), yearSplit: 'month' };
+  function periodRange() {
+    const a = S.anchor;
+    if (S.period === 'day') return [a, addDays(a, 1)];
+    if (S.period === 'week') return [a, addDays(a, 7)];
+    if (S.period === 'month') return [a, new Date(a.getFullYear(), a.getMonth() + 1, 1)];
+    if (S.period === 'year') return [a, new Date(a.getFullYear() + 1, 0, 1)];
+    const first = D.sessions.filter(counted).reduce((m, s) => Math.min(m, +new Date(s.date)), Date.now());
+    return [new Date(new Date(first).getFullYear(), new Date(first).getMonth(), 1), addDays(startOfDay(new Date()), 1)];
+  }
+  function anchorFor(period, d) {
+    if (period === 'day') return startOfDay(d);
+    if (period === 'week') return startOfWeek(d);
+    if (period === 'month') return new Date(d.getFullYear(), d.getMonth(), 1);
+    if (period === 'year') return new Date(d.getFullYear(), 0, 1);
+    return startOfDay(d);
+  }
+  function shiftAnchor(dir) {
+    const a = new Date(S.anchor);
+    if (S.period === 'day') a.setDate(a.getDate() + dir);
+    if (S.period === 'week') a.setDate(a.getDate() + 7 * dir);
+    if (S.period === 'month') a.setMonth(a.getMonth() + dir);
+    if (S.period === 'year') a.setFullYear(a.getFullYear() + dir);
+    return a;
+  }
+  function periodLabel() {
+    const [a, b] = periodRange();
+    const now = new Date();
+    if (S.period === 'day') {
+      const k = dayKey(a);
+      if (k === dayKey(now)) return 'Today';
+      if (k === dayKey(addDays(now, -1))) return 'Yesterday';
+      return a.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+    }
+    if (S.period === 'week') {
+      const e = addDays(b, -1);
+      const pre = dayKey(a) === dayKey(startOfWeek(now)) ? 'This week · ' : '';
+      return `${pre}${a.getDate()} ${MONTHS[a.getMonth()]} – ${e.getDate()} ${MONTHS[e.getMonth()]} ${e.getFullYear()}`;
+    }
+    if (S.period === 'month') return a.toLocaleDateString([], { month: 'long', year: 'numeric' });
+    if (S.period === 'year') return String(a.getFullYear());
+    return 'All time';
+  }
+  function sessionsIn(a, b) {
+    const t0 = +a, t1 = +b;
+    return D.sessions.filter((s) => { const t = +new Date(s.date); return counted(s) && t >= t0 && t < t1; });
+  }
+  function buckets() {
+    const [a, b] = periodRange();
+    const out = [];
+    if (S.period === 'day') {
+      for (let h = 0; h < 24; h++) {
+        const s = new Date(a); s.setHours(h);
+        const e = new Date(a); e.setHours(h + 1);
+        out.push({ s, e, label: h % 3 === 0 ? (h === 0 ? '12a' : h < 12 ? h + 'a' : h === 12 ? '12p' : (h - 12) + 'p') : '', title: `${fmtTime(s)} – ${fmtTime(e)}` });
+      }
+    } else if (S.period === 'week') {
+      for (let i = 0; i < 7; i++) { const s = addDays(a, i); out.push({ s, e: addDays(s, 1), label: DOW[i], title: s.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'short' }), zoom: ['day', s] }); }
+    } else if (S.period === 'month') {
+      let s = startOfWeek(a);
+      let i = 1;
+      while (s < b) {
+        const e = addDays(s, 7);
+        const ls = s < a ? a : s, le = addDays(e > b ? b : e, -1);
+        out.push({ s: ls, e: e > b ? b : e, label: `${ls.getDate()}–${le.getDate()}`, title: `Week ${i}: ${ls.getDate()} ${MONTHS[ls.getMonth()]} – ${le.getDate()} ${MONTHS[le.getMonth()]}`, zoom: ['week', s] });
+        s = e; i++;
+      }
+    } else if (S.period === 'year' && S.yearSplit === 'week') {
+      let s = startOfWeek(a), i = 1;
+      while (s < b) {
+        const e = addDays(s, 7);
+        out.push({ s: s < a ? a : s, e: e > b ? b : e, label: (i === 1 || i % 4 === 0) ? `W${i}` : '', title: `Week ${i} (from ${s.getDate()} ${MONTHS[s.getMonth()]})`, zoom: ['week', s] });
+        s = e; i++;
+      }
+    } else if (S.period === 'year') {
+      for (let m = 0; m < 12; m++) { const s = new Date(a.getFullYear(), m, 1); out.push({ s, e: new Date(a.getFullYear(), m + 1, 1), label: MONTHS[m], title: s.toLocaleDateString([], { month: 'long', year: 'numeric' }), zoom: ['month', s] }); }
+    } else {
+      let s = new Date(a);
+      const months = (b.getFullYear() - a.getFullYear()) * 12 + b.getMonth() - a.getMonth() + 1;
+      if (months <= 36) {
+        while (s < b) { const e = new Date(s.getFullYear(), s.getMonth() + 1, 1); out.push({ s, e, label: s.getMonth() === 0 || out.length === 0 ? `${MONTHS[s.getMonth()]} ${String(s.getFullYear()).slice(2)}` : (months <= 14 ? MONTHS[s.getMonth()] : ''), title: s.toLocaleDateString([], { month: 'long', year: 'numeric' }), zoom: ['month', s] }); s = e; }
+      } else {
+        s = new Date(a.getFullYear(), 0, 1);
+        while (s < b) { const e = new Date(s.getFullYear() + 1, 0, 1); out.push({ s, e, label: String(s.getFullYear()), title: String(s.getFullYear()), zoom: ['year', s] }); s = e; }
+      }
+    }
+    return out;
+  }
+  function positionSegs() {
+    $$('.seg').forEach((seg) => {
+      const act = $('button.active', seg), pill = $('.seg-pill', seg);
+      if (!act || !pill) return;
+      pill.style.width = act.offsetWidth + 'px';
+      pill.style.transform = `translateX(${act.offsetLeft}px)`;
+    });
+  }
+  let lastBucketSig = '';
+  function renderStats(fresh, dir) {
+    const [a, b] = periodRange();
+    const now = new Date();
+    $$('#period-seg button').forEach((x) => x.classList.toggle('active', x.dataset.p === S.period));
+    $('#year-split').classList.toggle('hidden', S.period !== 'year');
+    $$('#year-split button').forEach((x) => x.classList.toggle('active', x.dataset.s === S.yearSplit));
+    requestAnimationFrame(positionSegs);
+    const lbl = $('#period-label span');
+    lbl.textContent = periodLabel();
+    lbl.className = dir ? (dir > 0 ? 'in-r' : 'in-l') : '';
+    $('#prev-period').disabled = S.period === 'all';
+    $('#next-period').disabled = S.period === 'all' || shiftAnchor(1) > now;
+    $('#today-period').style.visibility = (S.period === 'all' || +S.anchor === +anchorFor(S.period, now)) ? 'hidden' : 'visible';
+
+    const list = sessionsIn(a, b);
+    const total = list.reduce((x, s) => x + s.duration, 0);
+    const bySub = {};
+    list.forEach((s) => { bySub[s.subject] = (bySub[s.subject] || 0) + s.duration; });
+    const ranked = Object.entries(bySub).sort((x, y) => y[1] - x[1]);
+
+    // stat cards
+    animateNumber($('#st-total'), total, fmtDur);
+    animateNumber($('#st-sessions'), list.length, (v) => Math.round(v));
+    let days = 1;
+    if (S.period !== 'day') {
+      const end = b > now ? addDays(startOfDay(now), 1) : b;
+      days = Math.max(1, Math.round((end - a) / 864e5));
+    }
+    $('#st-avg-label').textContent = S.period === 'day' ? 'Average session' : 'Daily average';
+    animateNumber($('#st-avg'), S.period === 'day' ? (list.length ? total / list.length : 0) : total / days, fmtDur);
+    const top = $('#st-top');
+    top.textContent = ranked.length ? ranked[0][0] : '-';
+    top.style.color = ranked.length ? colorOf(ranked[0][0]) : '';
+    top.classList.remove('swap'); void top.offsetWidth;
+    top.style.animation = 'fadeUp .5s var(--ease)';
+    setTimeout(() => { top.style.animation = ''; }, 500);
+
+    renderDonut(ranked, total);
+    renderBars(fresh);
+    renderHBars(ranked);
+    renderStatsPlot(list, a);
+  }
+  // the period's forest: one tree per session, hover for the details
+  function renderStatsPlot(list, a) {
+    const host = $('#stats-plot');
+    const sorted = list.slice().sort((x, y) => new Date(x.date) - new Date(y.date));
+    const r = renderPlot(host, sorted, { seed: S.period + (a ? dayKey(a) : 'all'), key: 'st' + S.period, min: 4 });
+    const grown = sorted.filter((x) => !isWithered(x)).length, dead = sorted.length - grown;
+    $('#stats-plot-counts').textContent = !sorted.length ? 'No sessions in this period yet'
+      : `${grown} tree${grown === 1 ? '' : 's'}${dead ? ` · ${dead} withered` : ''}${r.shown < r.total ? ` · showing the latest ${r.shown}` : ''}`;
+    if (!sorted.length) host.insertAdjacentHTML('beforeend', '<div class="plot-empty">Finish a session to plant a tree here</div>');
+  }
+  function renderDonut(ranked, total) {
+    const host = $('#donut-segs');
+    const C = 2 * Math.PI * 84;
+    const existing = new Map($$('.donut-seg', host).map((c) => [c.dataset.s, c]));
+    let off = 0;
+    const gap = ranked.length > 1 ? 3 : 0;
+    const seen = new Set();
+    ranked.forEach(([name, dur]) => {
+      seen.add(name);
+      const len = Math.max(0, (dur / total) * C - gap);
+      let c = existing.get(name);
+      if (!c) {
+        c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        c.setAttribute('cx', 110); c.setAttribute('cy', 110); c.setAttribute('r', 84);
+        c.classList.add('donut-seg');
+        c.dataset.s = name;
+        c.style.strokeDasharray = `0 ${C}`;
+        c.style.strokeDashoffset = -off;
+        host.appendChild(c);
+        c.addEventListener('mouseenter', (e) => { hl(name, true); showTip(`<div class="tt-title">${esc(name)}</div>${c.dataset.tip}`, e); });
+        c.addEventListener('mousemove', moveTip);
+        c.addEventListener('mouseleave', () => { hl(name, false); hideTip(); });
+        void c.getBoundingClientRect();
+      }
+      c.style.stroke = colorOf(name);
+      c.dataset.tip = `${fmtDur(dur)} · ${Math.round((dur / total) * 100)}%`;
+      const o = off;
+      requestAnimationFrame(() => {
+        c.style.strokeDasharray = `${len} ${C}`;
+        c.style.strokeDashoffset = -o;
+        c.style.opacity = 1;
+      });
+      off += (dur / total) * C;
+    });
+    existing.forEach((c, name) => {
+      if (seen.has(name)) return;
+      c.style.strokeDasharray = `0 ${C}`;
+      c.style.opacity = 0;
+      setTimeout(() => c.remove(), 1000);
+    });
+    animateNumber($('#donut-total'), total, fmtDur);
+    $('#legend').innerHTML = ranked.length ? ranked.map(([n, d], i) => `<div class="legend-row" style="--c:${colorOf(n)};--i:${i}" data-s="${esc(n)}"><span class="dot"></span><span class="nm">${esc(n)}<small>${fmtDur(d)}</small></span><span class="pc">${Math.round((d / total) * 100)}%</span></div>`).join('')
+      : '<div class="empty">No study time in this period.</div>';
+    $$('#legend .legend-row').forEach((r) => {
+      r.addEventListener('mouseenter', () => hl(r.dataset.s, true));
+      r.addEventListener('mouseleave', () => hl(r.dataset.s, false));
+    });
+  }
+  function hl(name, on) {
+    $$('.donut-seg').forEach((c) => c.classList.toggle('hl', on && c.dataset.s === name));
+    $$('.legend-row').forEach((c) => c.classList.toggle('hl', on && c.dataset.s === name));
+  }
+  // pick a tick size so the four gridlines land on friendly numbers
+  const TICKS = [5, 10, 15, 30, 60, 120, 180, 240, 300, 600, 900, 1200, 1500, 3000, 6000, 12000].map((m) => m * 60);
+  function niceMax(v) {
+    const step = TICKS.find((t) => t * 4 >= v) || Math.ceil(v / 4 / 36000) * 36000;
+    return step * 4;
+  }
+  function axisLabel(sec) {
+    if (sec === 0) return '0';
+    if (sec < 3600) return `${Math.round(sec / 60)}m`;
+    const h = sec / 3600;
+    return Number.isInteger(h) ? `${h}h` : `${h.toFixed(1)}h`;
+  }
+  function renderBars(fresh) {
+    const bs = buckets();
+    const titles = { day: 'By hour', week: 'By day', month: 'By week', year: S.yearSplit === 'week' ? 'By week' : 'By month', all: 'Over time' };
+    $('#bars-title').textContent = titles[S.period];
+    $('#bars-note').textContent = S.period === 'day' ? 'Hover a bar for details.' : 'Hover a bar for details. Click one to zoom in.';
+    const data = bs.map((bk) => {
+      const by = {};
+      let tot = 0;
+      sessionsIn(bk.s, bk.e).forEach((s) => { by[s.subject] = (by[s.subject] || 0) + s.duration; tot += s.duration; });
+      return { ...bk, by, tot };
+    });
+    const max = niceMax(Math.max(0, ...data.map((d) => d.tot)));
+    // grid lines
+    const grid = $('#bars-grid');
+    grid.innerHTML = [0, 0.25, 0.5, 0.75, 1].map((f) => {
+      return `<div class="gl" style="bottom:${f * 100}%"><span>${axisLabel(max * f)}</span></div>`;
+    }).join('');
+    const cols = $('#bars-cols');
+    const sig = `${S.period}-${S.yearSplit}-${bs.length}`;
+    cols.style.setProperty('--gap', bs.length > 30 ? '3px' : bs.length > 14 ? '5px' : '10px');
+    const rebuild = fresh || sig !== lastBucketSig;
+    lastBucketSig = sig;
+    const nowT = Date.now();
+    if (rebuild) {
+      cols.innerHTML = data.map((d, i) => `<div class="bcol" style="--i:${i}"><div class="bstack"></div><span class="blabel">${d.label}</span></div>`).join('');
+    }
+    const colEls = $$('.bcol', cols);
+    data.forEach((d, i) => {
+      const col = colEls[i];
+      col.classList.toggle('current', nowT >= +d.s && nowT < +d.e);
+      $('.blabel', col).textContent = d.label;
+      const stack = $('.bstack', col);
+      const subs = D.subjects.map((s) => s.name).concat(Object.keys(d.by).filter((n) => !subj(n)));
+      const order = subs.filter((n) => d.by[n]);
+      // keep one segment per subject so heights can morph smoothly
+      const segs = new Map($$('div', stack).map((x) => [x.dataset.s, x]));
+      order.forEach((n) => {
+        let seg = segs.get(n);
+        if (!seg) { seg = document.createElement('div'); seg.dataset.s = n; seg.style.height = '0%'; stack.appendChild(seg); }
+        seg.style.background = colorOf(n);
+        segs.delete(n);
+        requestAnimationFrame(() => { seg.style.height = (d.tot ? (d.by[n] / d.tot) * 100 : 0) + '%'; });
+      });
+      segs.forEach((seg) => { seg.style.height = '0%'; setTimeout(() => seg.remove(), 900); });
+      if (rebuild) {
+        stack.style.height = '0%';
+        void stack.offsetHeight;
+      }
+      requestAnimationFrame(() => { stack.style.height = `${(d.tot / max) * 100}%`; });
+      col.onmouseenter = (e) => {
+        const rows = Object.entries(d.by).sort((x, y) => y[1] - x[1]).map(([n, v]) => `<div class="tt-row"><span><i style="--c:${colorOf(n)}"></i>${esc(n)}</span><b>${fmtDur(v)}</b></div>`).join('');
+        showTip(`<div class="tt-title">${d.title}</div>${rows || '<span class="muted">No study</span>'}${d.tot ? `<div class="tt-row" style="margin-top:6px;border-top:1px solid var(--border);padding-top:6px"><span>Total</span><b>${fmtDur(d.tot)}</b></div>` : ''}`, e);
+      };
+      col.onmousemove = moveTip;
+      col.onmouseleave = hideTip;
+      col.onclick = () => {
+        if (!d.zoom) return;
+        hideTip();
+        S.period = d.zoom[0];
+        S.anchor = anchorFor(d.zoom[0], d.zoom[1]);
+        renderStats(true, 1);
+      };
+    });
+  }
+  function renderHBars(ranked) {
+    const host = $('#hbars');
+    if (!ranked.length) { host.innerHTML = '<div class="empty">Study something and it will show up here.</div>'; return; }
+    const max = ranked[0][1];
+    host.innerHTML = ranked.map(([n, d], i) => `<div class="hbar" style="--c:${colorOf(n)};--i:${i}"><span class="nm"><i></i>${esc(n)}</span><div class="track"><div class="fill"></div></div><span class="v">${fmtDur(d)}</span></div>`).join('');
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      $$('.hbar .fill', host).forEach((f, i) => { f.style.width = `${(ranked[i][1] / max) * 100}%`; f.style.transitionDelay = `${i * 50}ms`; });
+    }));
+  }
+
+  // ---------------- garden ----------------
+  let gardenFilter = null;
+  // garden trees as plot items: the session each grew in, or the tree itself for very old saves
+  function gardenItems(list) {
+    const byId = new Map(D.sessions.map((s) => [s.id, s]));
+    return list.map((t) => byId.get(t.sessionId) || { id: 't' + t.id, subject: t.subject, duration: t.duration, date: t.date, tree: t.species, outcome: 'grown' })
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
+  }
+  function renderGardenScene(trees) {
+    if (!$('#gs-birds').childElementCount) {
+      $('#gs-birds').innerHTML = birds(3);
+      $('#gs-life').innerHTML = butterflies(3, 'scene') + fireflies(14);
+      makeStars();
+    }
+    const items = gardenItems(trees);
+    const r = renderPlot($('#garden-plot'), items, { seed: 'garden' + (gardenFilter || ''), key: 'gd', min: 5 });
+    const total = trees.reduce((a, t) => a + (t.duration || 0), 0);
+    $('#gs-caption').innerHTML = trees.length ? `<b>${trees.length}</b> tree${trees.length === 1 ? '' : 's'} · ${fmtDur(total)} of growing${r.shown < r.total ? ` · showing the latest ${r.shown}` : ''}` : 'Your first tree will appear here after 10 minutes of study';
+  }
+  function renderGarden() {
+    animateNumber($('#g-trees'), D.trees.length, (v) => Math.round(v), 600);
+    animateNumber($('#g-coins'), D.coins, (v) => Math.round(v), 600);
+    animateNumber($('#g-dead'), witheredCount(), (v) => Math.round(v), 600);
+    const subs = [...new Set(D.trees.map((t) => t.subject))];
+    const chips = $('#garden-chips');
+    chips.innerHTML = subs.length ? [`<button class="chip${!gardenFilter ? ' selected' : ''}" data-s="">All trees</button>`].concat(subs.map((s, i) => `<button class="chip${gardenFilter === s ? ' selected' : ''}" style="--c:${colorOf(s)};--i:${i + 1}" data-s="${esc(s)}"><span class="dot"></span>${esc(s)}</button>`)).join('') : '';
+    $$('.chip', chips).forEach((c) => c.addEventListener('click', () => { gardenFilter = c.dataset.s || null; renderGarden(); }));
+    const host = $('#garden');
+    const trees = D.trees.filter((t) => !gardenFilter || t.subject === gardenFilter).sort((a, b) => new Date(b.date) - new Date(a.date));
+    renderGardenScene(trees);
+    if (!trees.length) {
+      host.innerHTML = `<div class="garden-empty">${window.Tree.build('oak', 'empty')}<h3>Your garden is waiting</h3><p>Study for 10 minutes in one go and your first tree will be planted here.</p></div>`;
+      window.Tree.setGrowth($('.garden-empty .tree'), 0.15, 0);
+      return;
+    }
+    const groups = new Map();
+    trees.forEach((t) => {
+      const d = new Date(t.date);
+      const k = `${d.getFullYear()}-${d.getMonth()}`;
+      if (!groups.has(k)) groups.set(k, { label: d.toLocaleDateString([], { month: 'long', year: 'numeric' }), list: [] });
+      groups.get(k).list.push(t);
+    });
+    let idx = 0;
+    const FLOWERS = ['#fde047', '#f9a8d4', '#ffffff', '#c4b5fd', '#fca5a5'];
+    host.innerHTML = [...groups.values()].map((g, gi) => `<div class="garden-month"><h3>${g.label} · ${g.list.length} tree${g.list.length > 1 ? 's' : ''}</h3><div class="garden-field">${
+      g.list.map((t) => { const h = hashStr(t.id); return `<div class="garden-tile" style="--i:${Math.min(idx++, 40)};--fl:${FLOWERS[h % 5]};--fx:${(h >> 3) % 70 + 15}%" data-id="${t.id}">${window.Tree.build(t.species, 'g' + t.id)}</div>`; }).join('')
+    }${butterflies(gi % 2 ? 1 : 2, 'f' + gi)}</div></div>`).join('');
+    $$('.garden-tile', host).forEach((tile) => {
+      const t = D.trees.find((x) => x.id === tile.dataset.id);
+      const svg = $('.tree', tile);
+      const gr = window.Tree.growthFor(t.duration);
+      const sz = Math.max(0.8, window.Tree.sizeFor(1, gr.g)), vw = 172 * sz, vh = 214 * sz;
+      svg.setAttribute('viewBox', `${100 - vw / 2} ${217 - vh} ${vw} ${vh}`);
+      // skip the grow transition so garden trees appear fully formed
+      $$('.part, .gpart, .grow, .shadow', svg).forEach((n) => { n.style.transition = 'none'; });
+      window.Tree.setGrowth(svg, 1, gr.g);
+      requestAnimationFrame(() => $$('.part, .gpart, .grow, .shadow', svg).forEach((n) => { n.style.transition = ''; }));
+      const sp = window.Tree.SPECIES.find((x) => x.id === t.species) || { name: 'Tree' };
+      tile.addEventListener('mouseenter', (e) => showTip(`<div class="tt-title">${sp.name}</div><div class="tt-row"><span><i style="--c:${colorOf(t.subject)}"></i>${esc(t.subject)}</span><b>${fmtDur(t.duration)}</b></div><div class="muted" style="margin-top:4px">${new Date(t.date).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</div>`, e));
+      tile.addEventListener('mousemove', moveTip);
+      tile.addEventListener('mouseleave', hideTip);
+      tile.addEventListener('click', () => {
+        const r = tile.getBoundingClientRect();
+        burst(r.left + r.width / 2, r.top + r.height * 0.4, { n: 14, speed: 3, colors: [sp.leaf1 || '#4ade80', sp.leaf2 || '#2e7d3b'] });
+      });
+    });
+  }
+
+  // ---------------- trees page: cases + collection ----------------
+  const CASES = [
+    { id: 'seed', name: 'Seed Pouch', price: 50, color: '#a3e635', odds: { common: 70, uncommon: 25, rare: 5 } },
+    { id: 'sapling', name: 'Sapling Crate', price: 150, color: '#38bdf8', odds: { common: 35, uncommon: 40, rare: 20, epic: 5 } },
+    { id: 'grove', name: 'Grove Chest', price: 400, color: '#fbbf24', odds: { uncommon: 30, rare: 39, epic: 22, legendary: 8, mythical: 1 } },
+    { id: 'vault', name: 'Mythic Vault', price: 1000, color: '#ff4d8d', odds: { epic: 50, legendary: 38, mythical: 12 } },
+  ];
+  function rollCase(c) {
+    const entries = Object.entries(c.odds);
+    let r = Math.random() * entries.reduce((a, [, w]) => a + w, 0), rarity = entries[0][0];
+    for (const [k, w] of entries) { if ((r -= w) < 0) { rarity = k; break; } }
+    const pool = window.Tree.SPECIES.filter((x) => x.rarity === rarity);
+    return pool[Math.floor(Math.random() * pool.length)].id;
+  }
+  function renderTrees() {
+    const all = window.Tree.SPECIES;
+    animateNumber($('#tr-owned'), all.filter((x) => owns(x.id)).length, (v) => `${Math.round(v)} / ${all.length}`, 600);
+    animateNumber($('#tr-coins'), D.coins, (v) => Math.round(v).toLocaleString(), 600);
+    $('#cases').innerHTML = CASES.map((c, i) => `<div class="case-card" style="--cc:${c.color};--i:${i}" data-c="${c.id}">
+      <div class="case-stage"><div class="case-rays"></div><div class="case-beam"></div><div class="case-sparks">${'<i></i>'.repeat(12)}</div>
+      <div class="case-box"><div class="cb-lid"></div><div class="cb-body"></div><div class="cb-band"></div><div class="cb-shine"></div></div></div>
+      <h3>${c.name}</h3>
+      <div class="odds">${window.Tree.RARITY_ORDER.filter((r) => c.odds[r]).map((r) => `<span style="--rc:${window.Tree.RARITIES[r].color}"><i></i>${window.Tree.RARITIES[r].name}<b>${c.odds[r]}%</b></span>`).join('')}</div>
+      <button class="btn primary open-case"${D.coins < c.price ? ' disabled' : ''}><span class="coin sm"></span>${c.price}</button>
+      ${D.coins < c.price ? `<span class="need">Need ${c.price - D.coins} more coins</span>` : '<span class="need">&nbsp;</span>'}
+    </div>`).join('');
+    $$('.case-card').forEach((card) => {
+      $('.open-case', card).addEventListener('click', () => openCase(CASES.find((c) => c.id === card.dataset.c)));
+      // tilt towards the mouse and kick off a little burst of sparkles on the way in
+      card.addEventListener('mouseenter', () => {
+        const r = $('.case-box', card).getBoundingClientRect();
+        const c = CASES.find((x) => x.id === card.dataset.c);
+        burst(r.left + r.width / 2, r.top + r.height * 0.3, { n: 16, up: true, speed: 4.5, shape: ['star4', 'dot'], glow: true, gravity: 0.06, colors: [c.color, '#ffffff', '#fde68a'] });
+      });
+      card.addEventListener('mousemove', (e) => {
+        const r = card.getBoundingClientRect();
+        card.style.setProperty('--rx', `${(((e.clientY - r.top) / r.height) - 0.5) * -12}deg`);
+        card.style.setProperty('--ry', `${(((e.clientX - r.left) / r.width) - 0.5) * 14}deg`);
+        card.style.setProperty('--mx', `${((e.clientX - r.left) / r.width) * 100}%`);
+        card.style.setProperty('--my', `${((e.clientY - r.top) / r.height) * 100}%`);
+      });
+      card.addEventListener('mouseleave', () => { card.style.setProperty('--rx', '0deg'); card.style.setProperty('--ry', '0deg'); });
+    });
+    const ord = window.Tree.RARITY_ORDER;
+    const sorted = all.slice().sort((a, b) => (isFav(b.id) - isFav(a.id)) || ord.indexOf(a.rarity) - ord.indexOf(b.rarity));
+    $('#collection').innerHTML = sorted.map((sp, i) => {
+      const r = window.Tree.RARITIES[sp.rarity], n = D.collection.owned[sp.id] || 0;
+      return `<div class="col-card${n ? '' : ' locked'}${D.selectedTree === sp.id ? ' selected' : ''}" style="--rc:${r.color};--i:${i}" data-t="${sp.id}">
+        <div class="col-img">${staticTree(sp.id, 3 * 3600, false, 'col' + sp.id)}${n ? '' : '<span class="lock">?</span>'}</div>${n ? starHtml(sp.id) : ''}
+        <div class="col-name">${esc(sp.name)}</div>
+        <div class="col-meta"><span class="rar">${r.name}</span>${r.boost ? `<span class="boost">${pct(r.boost)} coins</span>` : ''}${n > 1 ? `<span class="cnt">×${n}</span>` : ''}</div>
+      </div>`;
+    }).join('');
+    paintTrees($('#collection'));
+    $$('#collection .fav-star').forEach((st) => st.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const on = toggleFav(st.dataset.fav);
+      st.classList.toggle('on', on); st.classList.remove('pop'); void st.offsetWidth; st.classList.add('pop');
+      st.title = on ? 'Remove from favourites' : 'Favourite: keep at the front';
+      toast(on ? `${esc(window.Tree.get(st.dataset.fav).name)} will show first when picking a tree` : `${esc(window.Tree.get(st.dataset.fav).name)} removed from favourites`);
+    }));
+    $$('.col-card').forEach((c) => c.addEventListener('click', () => {
+      if (c.classList.contains('locked')) { c.classList.remove('shake'); void c.offsetWidth; c.classList.add('shake'); return; }
+      if (T.state !== 'idle') { toast('You can change trees once this session ends'); return; }
+      D.selectedTree = T.tree = c.dataset.t; save();
+      $$('.col-card').forEach((x) => x.classList.toggle('selected', x === c));
+      toast(`${esc(window.Tree.get(c.dataset.t).name)} will grow in your next session`);
+    }));
+  }
+  const REEL_W = 132;
+  function openCase(c) {
+    if (D.coins < c.price) return;
+    D.coins -= c.price;
+    renderCoins();
+    const won = rollCase(c);
+    const sp = window.Tree.get(won), r = window.Tree.RARITIES[sp.rarity];
+    const isNew = !owns(won);
+    D.collection.owned[won] = (D.collection.owned[won] || 0) + 1;
+    D.collection.opened = (D.collection.opened || 0) + 1;
+    if (!isNew) D.coins += r.refund;
+    save(true); // the result is stored before the animation, so closing the app can't lose it
+
+    const ov = $('#case-overlay');
+    $('#co-title').textContent = `Opening ${c.name}`;
+    $('#co-result').innerHTML = '';
+    $('#co-actions').innerHTML = '';
+    const N = 56, WIN = 48;
+    const items = Array.from({ length: N }, (_, i) => (i === WIN ? won : rollCase(c)));
+    const reel = $('#reel');
+    reel.style.transition = 'none';
+    reel.style.transform = 'translateX(0)';
+    reel.innerHTML = items.map((id, i) => {
+      const x = window.Tree.get(id);
+      return `<div class="reel-item${i === WIN ? ' winner' : ''}" style="--rc:${window.Tree.RARITIES[x.rarity].color}">${staticTree(id, 3 * 3600, false, `re${i}`)}<span>${esc(x.name)}</span></div>`;
+    }).join('');
+    paintTrees(reel);
+    ov.classList.remove('hidden', 'closing');
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const wrapW = $('.reel-wrap').offsetWidth;
+      const jitter = (Math.random() - 0.5) * (REEL_W * 0.6);
+      const x = WIN * REEL_W - wrapW / 2 + (REEL_W - 12) / 2 + jitter;
+      reel.style.transition = 'transform 5.4s cubic-bezier(.06,.62,.1,1)';
+      reel.style.transform = `translateX(${-x}px)`;
+    }));
+    const done = () => {
+      reel.removeEventListener('transitionend', done);
+      // settle exactly on the winner
+      const wrapW = $('.reel-wrap').offsetWidth;
+      reel.style.transition = 'transform .5s cubic-bezier(.34,1.56,.64,1)';
+      reel.style.transform = `translateX(${-(WIN * REEL_W - wrapW / 2 + (REEL_W - 12) / 2)}px)`;
+      $('.reel-item.winner').classList.add('win');
+      $('#co-title').textContent = isNew ? 'New tree unlocked!' : 'Duplicate';
+      $('#co-result').innerHTML = `<div class="cr-card" style="--rc:${r.color}">
+        <div class="cr-tree" id="cr-tree">${window.Tree.build(won, 'cr')}</div>
+        <div class="cr-rar">${r.name}</div><div class="cr-name">${esc(sp.name)}</div>
+        <div class="cr-info">${isNew ? (r.boost ? `Earns ${pct(r.boost)} coins while you study with it` : 'Added to your collection') : `You already have this one. <b>+${r.refund}</b> coins back`}</div></div>`;
+      const t = $('#cr-tree .tree');
+      $('#cr-tree').classList.add('alive');
+      window.Tree.setGrowth(t, 0, 0);
+      [0.3, 0.6, 1].forEach((p, i) => setTimeout(() => window.Tree.setGrowth(t, p, p === 1 ? 0.6 : 0), 120 + i * 380));
+      const box = $('.cr-card').getBoundingClientRect();
+      const big = sp.rarity === 'legendary' || sp.rarity === 'epic' || sp.rarity === 'mythical';
+      burst(box.left + box.width / 2, box.top + box.height * 0.35, { n: big ? 110 : 50, up: true, speed: big ? 10 : 7, colors: [r.color, '#ffffff', sp.leaf1, sp.leaf2] });
+      if (!isNew) renderCoins();
+      setTimeout(() => checkAchievements(), 900);
+      const again = D.coins >= c.price;
+      $('#co-actions').innerHTML = `<button class="btn ghost" data-a="close">Close</button>
+        ${T.state === 'idle' ? '<button class="btn" data-a="use">Use this tree</button>' : ''}
+        <button class="btn primary" data-a="again"${again ? '' : ' disabled'}>Open another <span class="coin sm"></span>${c.price}</button>`;
+      $$('#co-actions .btn').forEach((b) => b.addEventListener('click', () => {
+        const a = b.dataset.a;
+        if (a === 'again') return openCase(c);
+        if (a === 'use') { D.selectedTree = T.tree = won; save(); toast(`${esc(sp.name)} will grow in your next session`); }
+        ov.classList.add('closing');
+        setTimeout(() => { ov.classList.add('hidden'); ov.classList.remove('closing'); renderTrees(); }, 300);
+      }));
+    };
+    reel.addEventListener('transitionend', done);
+  }
+
+  // ---------------- achievements ----------------
+  // Badges are earned once and kept (no rewards yet). D.achievements = { badgeId: ISO date earned }.
+  const H = 3600;
+  const BADGE_CATS = [
+    { id: 'time', name: 'Time spent', sub: 'Hours of study, all subjects together' },
+    { id: 'grown', name: 'Trees grown', sub: 'Trees planted in your garden' },
+    { id: 'collected', name: 'Trees collected', sub: 'Species unlocked from cases' },
+  ];
+  const TIERS = {
+    bronze: ['#ffd3a8', '#c9773a', '#7a3f16'], silver: ['#ffffff', '#b4bfcc', '#5b6675'], gold: ['#fff4b0', '#f5b301', '#9a6200'],
+    platinum: ['#e6fdff', '#67d4f5', '#1f6a8f'], diamond: ['#f7e8ff', '#b77cff', '#5b21b6'], mythic: ['#ffe0ec', '#ff4d8d', '#8f1048'],
+  };
+  const BADGES = [
+    { id: 'time-1', cat: 'time', name: 'First hour', desc: 'Study for 1 hour in total', metric: 'total', goal: 1 * H, tier: 'bronze', label: '1h', icon: 'clock' },
+    { id: 'time-5', cat: 'time', name: 'Warming up', desc: 'Study for 5 hours in total', metric: 'total', goal: 5 * H, tier: 'bronze', label: '5h', icon: 'clock' },
+    { id: 'time-10', cat: 'time', name: 'Committed', desc: 'Study for 10 hours in total', metric: 'total', goal: 10 * H, tier: 'silver', label: '10h', icon: 'clock' },
+    { id: 'time-25', cat: 'time', name: 'Dedicated', desc: 'Study for 25 hours in total', metric: 'total', goal: 25 * H, tier: 'silver', label: '25h', icon: 'clock' },
+    { id: 'time-50', cat: 'time', name: 'Scholar', desc: 'Study for 50 hours in total', metric: 'total', goal: 50 * H, tier: 'gold', label: '50h', icon: 'clock' },
+    { id: 'time-100', cat: 'time', name: 'Centurion', desc: 'Study for 100 hours in total', metric: 'total', goal: 100 * H, tier: 'platinum', label: '100h', icon: 'clock' },
+    { id: 'time-250', cat: 'time', name: 'Master', desc: 'Study for 250 hours in total', metric: 'total', goal: 250 * H, tier: 'diamond', label: '250h', icon: 'clock' },
+    { id: 'time-500', cat: 'time', name: 'Living legend', desc: 'Study for 500 hours in total', metric: 'total', goal: 500 * H, tier: 'mythic', label: '500h', icon: 'clock' },
+    { id: 'focus-1', cat: 'time', name: 'Deep focus', desc: 'Study for 1 hour in a single session', metric: 'longest', goal: 1 * H, tier: 'silver', label: '1h', icon: 'bolt' },
+    { id: 'focus-2', cat: 'time', name: 'Marathon', desc: 'Study for 2 hours in a single session', metric: 'longest', goal: 2 * H, tier: 'gold', label: '2h', icon: 'bolt' },
+    { id: 'focus-3', cat: 'time', name: 'Iron will', desc: 'Study for 3 hours in a single session', metric: 'longest', goal: 3 * H, tier: 'diamond', label: '3h', icon: 'bolt' },
+    { id: 'grown-1', cat: 'grown', name: 'First sprout', desc: 'Grow your first tree', metric: 'grown', goal: 1, tier: 'bronze', label: '1', icon: 'sprout' },
+    { id: 'grown-5', cat: 'grown', name: 'Little grove', desc: 'Grow 5 trees', metric: 'grown', goal: 5, tier: 'bronze', label: '5', icon: 'sprout' },
+    { id: 'grown-10', cat: 'grown', name: 'Young forest', desc: 'Grow 10 trees', metric: 'grown', goal: 10, tier: 'silver', label: '10', icon: 'tree' },
+    { id: 'grown-25', cat: 'grown', name: 'Thicket', desc: 'Grow 25 trees', metric: 'grown', goal: 25, tier: 'silver', label: '25', icon: 'tree' },
+    { id: 'grown-50', cat: 'grown', name: 'Woodland', desc: 'Grow 50 trees', metric: 'grown', goal: 50, tier: 'gold', label: '50', icon: 'tree' },
+    { id: 'grown-100', cat: 'grown', name: 'Forest keeper', desc: 'Grow 100 trees', metric: 'grown', goal: 100, tier: 'platinum', label: '100', icon: 'forest' },
+    { id: 'grown-250', cat: 'grown', name: 'Ancient forest', desc: 'Grow 250 trees', metric: 'grown', goal: 250, tier: 'diamond', label: '250', icon: 'forest' },
+    { id: 'grown-500', cat: 'grown', name: 'Evergreen', desc: 'Grow 500 trees', metric: 'grown', goal: 500, tier: 'mythic', label: '500', icon: 'forest' },
+    { id: 'coll-3', cat: 'collected', name: 'Collector', desc: 'Own 3 different trees', metric: 'owned', goal: 3, tier: 'bronze', label: '3', icon: 'leaf' },
+    { id: 'coll-6', cat: 'collected', name: 'Botanist', desc: 'Own 6 different trees', metric: 'owned', goal: 6, tier: 'silver', label: '6', icon: 'leaf' },
+    { id: 'coll-10', cat: 'collected', name: 'Arborist', desc: 'Own 10 different trees', metric: 'owned', goal: 10, tier: 'gold', label: '10', icon: 'leaf' },
+    { id: 'coll-15', cat: 'collected', name: 'Curator', desc: 'Own 15 different trees', metric: 'owned', goal: 15, tier: 'platinum', label: '15', icon: 'leaf' },
+    { id: 'coll-all', cat: 'collected', name: 'Completionist', desc: 'Own every tree', metric: 'owned', goal: 'all', tier: 'mythic', label: 'ALL', icon: 'crown' },
+    { id: 'rar-rare', cat: 'collected', name: 'Rare find', desc: 'Unlock a rare tree', metric: 'rarity:rare', goal: 1, tier: 'silver', label: 'R', icon: 'gem' },
+    { id: 'rar-epic', cat: 'collected', name: 'Epic find', desc: 'Unlock an epic tree', metric: 'rarity:epic', goal: 1, tier: 'gold', label: 'E', icon: 'gem' },
+    { id: 'rar-legendary', cat: 'collected', name: 'Legendary find', desc: 'Unlock a legendary tree', metric: 'rarity:legendary', goal: 1, tier: 'platinum', label: 'L', icon: 'gem' },
+    { id: 'rar-mythical', cat: 'collected', name: 'Myth made real', desc: 'Unlock the mythical tree', metric: 'rarity:mythical', goal: 1, tier: 'mythic', label: 'M', icon: 'gem' },
+    { id: 'case-1', cat: 'collected', name: 'Unboxer', desc: 'Open your first case', metric: 'opened', goal: 1, tier: 'bronze', label: '1', icon: 'box' },
+    { id: 'case-10', cat: 'collected', name: 'Case cracker', desc: 'Open 10 cases', metric: 'opened', goal: 10, tier: 'silver', label: '10', icon: 'box' },
+    { id: 'case-50', cat: 'collected', name: 'High roller', desc: 'Open 50 cases', metric: 'opened', goal: 50, tier: 'gold', label: '50', icon: 'box' },
+  ];
+  function badgeMetrics() {
+    const counted_ = D.sessions.filter(counted);
+    const owned = window.Tree.SPECIES.filter((x) => owns(x.id));
+    return {
+      total: counted_.reduce((a, s) => a + s.duration, 0),
+      longest: counted_.reduce((m, s) => Math.max(m, s.duration), D.active ? elapsedSec() : 0),
+      grown: D.trees.length,
+      owned: owned.length,
+      opened: (D.collection && D.collection.opened) || 0,
+      rarity: (r) => owned.filter((x) => x.rarity === r).length,
+    };
+  }
+  function badgeProgress(b, m) {
+    const goal = b.goal === 'all' ? window.Tree.SPECIES.length : b.goal;
+    const cur = b.metric.startsWith('rarity:') ? m.rarity(b.metric.slice(7)) : m[b.metric];
+    return { cur: Math.min(cur, goal), goal, done: cur >= goal };
+  }
+  const BADGE_ICONS = {
+    clock: '<circle cx="50" cy="47" r="15" fill="none" stroke="currentColor" stroke-width="5"/><path d="M50 38v10l7 5" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round"/>',
+    bolt: '<path d="M54 28 38 52h11l-4 18 17-25H51z" fill="currentColor"/>',
+    sprout: '<path d="M50 66V48" stroke="currentColor" stroke-width="5" stroke-linecap="round"/><path d="M50 50c-12 0-17-8-17-16 10 0 17 6 17 16zM50 46c0-10 7-16 17-16 0 8-5 16-17 16z" fill="currentColor"/>',
+    tree: '<path d="M50 70V54" stroke="currentColor" stroke-width="5" stroke-linecap="round"/><circle cx="50" cy="42" r="15" fill="currentColor"/>',
+    forest: '<path d="M38 68V58M62 68V58M50 70V56" stroke="currentColor" stroke-width="4" stroke-linecap="round"/><path d="M38 30l-11 28h22zM62 30l-11 28h22z" fill="currentColor" opacity=".75"/><path d="M50 26l-12 31h24z" fill="currentColor"/>',
+    leaf: '<path d="M33 64C33 40 48 30 68 30c0 24-12 34-30 34z" fill="currentColor"/><path d="M34 64l20-20" stroke="rgba(0,0,0,.25)" stroke-width="3" stroke-linecap="round"/>',
+    crown: '<path d="M32 62h36l4-26-12 10-10-16-10 16-12-10z" fill="currentColor"/>',
+    gem: '<path d="M38 34h24l9 11-21 25-21-25z" fill="currentColor"/><path d="M29 45h42M44 34l6 36 6-36" stroke="rgba(0,0,0,.22)" stroke-width="2" fill="none"/>',
+    box: '<path d="M32 42h36v24H32z" fill="currentColor"/><path d="M29 34h42v9H29z" fill="currentColor" opacity=".8"/><path d="M47 34h6v32h-6z" fill="rgba(255,255,255,.55)"/>',
+  };
+  function badgeSvg(b, uidKey) {
+    const [hi, mid, lo] = TIERS[b.tier];
+    const k = `bd-${uidKey}`;
+    const pts = Array.from({ length: 24 }, (_, i) => { const a = (i / 24) * Math.PI * 2 - Math.PI / 2, r = i % 2 ? 38 : 43; return `${(50 + Math.cos(a) * r).toFixed(1)},${(48 + Math.sin(a) * r).toFixed(1)}`; }).join(' ');
+    return `<svg class="badge-svg" viewBox="0 0 100 112">
+      <defs><linearGradient id="${k}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${hi}"/><stop offset=".55" stop-color="${mid}"/><stop offset="1" stop-color="${lo}"/></linearGradient>
+      <linearGradient id="${k}r" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${mid}"/><stop offset="1" stop-color="${lo}"/></linearGradient></defs>
+      <path d="M30 76 22 108l14-7 9 11 7-30zM70 76l8 32-14-7-9 11-7-30z" fill="url(#${k}r)"/>
+      <polygon points="${pts}" fill="url(#${k})"/>
+      <circle cx="50" cy="48" r="31" fill="${lo}" opacity=".9"/>
+      <circle cx="50" cy="48" r="28" fill="url(#${k})"/>
+      <g class="badge-icon" color="${lo}" transform="translate(0,-2)">${BADGE_ICONS[b.icon]}</g>
+      <rect x="31" y="66" width="38" height="13" rx="6.5" fill="${lo}"/>
+      <text x="50" y="76" text-anchor="middle" font-size="9.5" font-weight="800" fill="${hi}" font-family="inherit">${b.label}</text>
+      <ellipse class="badge-gloss" cx="40" cy="30" rx="16" ry="8" fill="#fff" opacity=".28" transform="rotate(-25 40 30)"/>
+    </svg>`;
+  }
+  // Award any badges that are now complete. silent: no celebration (used when seeding an upgraded save).
+  let badgeQueue = [], badgeShowing = false;
+  function checkAchievements(silent) {
+    if (!D || !D.achievements) return [];
+    const m = badgeMetrics(), now = new Date().toISOString(), fresh = [];
+    BADGES.forEach((b) => { if (!D.achievements[b.id] && badgeProgress(b, m).done) { D.achievements[b.id] = now; fresh.push(b); } });
+    if (!fresh.length) return fresh;
+    save();
+    if (!silent) { badgeQueue.push(...fresh); showNextBadge(); }
+    if (currentPage === 'badges') renderBadges();
+    return fresh;
+  }
+  function showNextBadge() {
+    if (badgeShowing || !badgeQueue.length) return;
+    badgeShowing = true;
+    const b = badgeQueue.shift();
+    const el = document.createElement('div');
+    el.className = 'badge-pop';
+    el.innerHTML = `<div class="bp-card" style="--tc:${TIERS[b.tier][1]}"><div class="bp-rays"></div><div class="bp-badge">${badgeSvg(b, 'pop' + b.id)}</div><div class="bp-kicker">Badge unlocked</div><h2>${esc(b.name)}</h2><p>${esc(b.desc)}</p>${badgeQueue.length ? `<span class="bp-more">+${badgeQueue.length} more</span>` : ''}</div>`;
+    document.body.appendChild(el);
+    requestAnimationFrame(() => {
+      const r = $('.bp-badge', el).getBoundingClientRect();
+      setTimeout(() => burst(r.left + r.width / 2, r.top + r.height / 2, { n: 70, speed: 8, colors: [...TIERS[b.tier], '#ffffff'] }), 350);
+    });
+    let closed = false;
+    const close = () => {
+      if (closed) return; closed = true;
+      el.classList.add('out');
+      setTimeout(() => { el.remove(); badgeShowing = false; showNextBadge(); }, 380);
+    };
+    el.addEventListener('click', close);
+    setTimeout(close, 3600);
+  }
+  function renderBadges() {
+    const m = badgeMetrics();
+    const earned = BADGES.filter((b) => D.achievements[b.id]).length;
+    animateNumber($('#bd-earned'), earned, (v) => `${Math.round(v)} / ${BADGES.length}`, 600);
+    const latest = BADGES.filter((b) => D.achievements[b.id]).sort((a, b) => D.achievements[b.id].localeCompare(D.achievements[a.id]))[0];
+    $('#bd-latest').textContent = latest ? latest.name : 'None yet';
+    let idx = 0;
+    $('#badge-cats').innerHTML = BADGE_CATS.map((c, ci) => {
+      const list = BADGES.filter((b) => b.cat === c.id);
+      const got = list.filter((b) => D.achievements[b.id]).length;
+      return `<section class="card badge-cat stagger" style="--i:${ci + 1}">
+        <div class="card-head"><div><h3>${c.name}</h3><span class="muted">${c.sub}</span></div><span class="bc-count"><b>${got}</b> / ${list.length}</span></div>
+        <div class="bc-bar"><i style="--p:${(got / list.length).toFixed(3)}"></i></div>
+        <div class="badge-grid">${list.map((b) => {
+          const pr = badgeProgress(b, m), on = !!D.achievements[b.id];
+          const curTxt = b.metric === 'total' || b.metric === 'longest' ? `${fmtDur(pr.cur)} / ${fmtDur(pr.goal)}` : `${pr.cur} / ${pr.goal}`;
+          return `<div class="badge${on ? ' earned' : ''} t-${b.tier}" style="--i:${idx++};--tc:${TIERS[b.tier][1]}" data-b="${b.id}">
+            <div class="badge-art">${badgeSvg(b, b.id)}${on ? '' : '<span class="badge-lock"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></span>'}</div>
+            <div class="badge-name">${esc(b.name)}</div>
+            <div class="badge-desc">${esc(b.desc)}</div>
+            ${on ? `<div class="badge-when">Earned ${new Date(D.achievements[b.id]).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })}</div>`
+              : `<div class="badge-prog"><i style="--p:${(pr.cur / pr.goal).toFixed(3)}"></i></div><div class="badge-when">${curTxt}</div>`}
+          </div>`;
+        }).join('')}</div></section>`;
+    }).join('');
+    // a little 3D tilt that follows the mouse
+    $$('#badge-cats .badge').forEach((el) => {
+      el.addEventListener('mousemove', (e) => {
+        const r = el.getBoundingClientRect();
+        el.style.setProperty('--rx', `${(((e.clientY - r.top) / r.height) - 0.5) * -16}deg`);
+        el.style.setProperty('--ry', `${(((e.clientX - r.left) / r.width) - 0.5) * 18}deg`);
+        el.style.setProperty('--mx', `${((e.clientX - r.left) / r.width) * 100}%`);
+      });
+      el.addEventListener('mouseleave', () => { el.style.setProperty('--rx', '0deg'); el.style.setProperty('--ry', '0deg'); });
+      el.addEventListener('click', () => {
+        if (!el.classList.contains('earned')) { el.classList.remove('shake'); void el.offsetWidth; el.classList.add('shake'); return; }
+        const art = $('.badge-art', el); art.classList.remove('spin'); void art.offsetWidth; art.classList.add('spin');
+        const r = art.getBoundingClientRect();
+        burst(r.left + r.width / 2, r.top + r.height / 2, { n: 24, speed: 4, leaf: false, colors: [...TIERS[BADGES.find((b) => b.id === el.dataset.b).tier], '#ffffff'] });
+      });
+    });
+  }
+
+  // ---------------- tutorial ----------------
+  const TOUR = [
+    { sel: null, title: 'Welcome to Study Tracker', text: 'Here\'s a quick tour of how it works. It takes about 30 seconds.' },
+    { sel: '#subject-chips', title: 'Pick a subject', text: 'Choose what you\'re about to study. You need a subject before you can start.' },
+    { sel: '#tree-chips', title: 'Pick a tree', text: 'Choose which tree to grow. Your last session\'s tree is picked for you. Rare trees earn bonus coins.' },
+    { sel: '.controls', title: 'Start the stopwatch', text: 'Start and pause as you need. Stop saves the session. Cancel throws it away. The space bar also starts and pauses.' },
+    { sel: '.tree-card', title: 'Your forest and your tree', text: 'Before you start, this shows your forest for the week: one tree per session. Hover over a tree for its details, and use the arrows to see earlier weeks. Once you start, your new tree grows here. At 10 minutes it takes root and earns 10 coins, then 1 coin for every extra minute, plus a 5 coin bonus at each full hour. Cancel before 10 minutes and it dies.' },
+    { sel: '.nav-item[data-page="stats"]', title: 'Stats', text: 'Pie and bar charts for any day, week, month or year.' },
+    { sel: '.nav-item[data-page="garden"]', title: 'Garden', text: 'Every tree that took root is planted here.' },
+    { sel: '.nav-item[data-page="trees"]', title: 'Trees', text: 'Spend coins on cases to unlock new trees. Pricier cases have rarer trees. Duplicates give some coins back.' },
+    { sel: '.nav-item[data-page="history"]', title: 'History', text: 'Every past session with its tree. You can delete sessions here, including withered and cancelled ones.' },
+    { sel: '.nav-item[data-page="settings"]', title: 'Settings', text: 'Change subjects, mark finished ones, switch themes, and back up your data.' },
+    { sel: '#coin-pill', title: 'Your coins', text: 'Your coin total is always up here. That\'s everything. Happy studying!' },
+  ];
+  let tourStep = 0;
+  function startTour() {
+    if (T.state === 'idle' && currentPage !== 'timer') go('timer');
+    tourStep = 0;
+    $('#tour').classList.remove('hidden', 'closing');
+    setTimeout(showTourStep, 60);
+  }
+  function endTour() {
+    D.profile.tutorialSeen = true; save();
+    $('#tour').classList.add('closing');
+    setTimeout(() => $('#tour').classList.add('hidden'), 350);
+    $('#page-timer').scrollTo({ top: 0, behavior: 'smooth' });
+  }
+  function showTourStep() {
+    const st = TOUR[tourStep];
+    const spot = $('#tour-spot'), card = $('#tour-card');
+    const el = st.sel ? $(st.sel) : null;
+    const place = () => {
+      let r;
+      if (el && el.offsetParent !== null) {
+        const b = el.getBoundingClientRect();
+        r = { x: b.left - 8, y: b.top - 8, w: b.width + 16, h: b.height + 16 };
+        spot.classList.remove('none');
+      } else {
+        r = { x: innerWidth / 2, y: innerHeight / 2, w: 0, h: 0 };
+        spot.classList.add('none');
+      }
+      Object.assign(spot.style, { left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px' });
+      $('#tour-step').textContent = `${tourStep + 1} of ${TOUR.length}`;
+      $('#tour-title').textContent = st.title;
+      $('#tour-text').textContent = st.text;
+      $('#tour-back').style.visibility = tourStep ? 'visible' : 'hidden';
+      $('#tour-next').textContent = tourStep === TOUR.length - 1 ? 'Finish' : 'Next';
+      card.classList.remove('pop'); void card.offsetWidth; card.classList.add('pop');
+      const cw = card.offsetWidth, ch = card.offsetHeight;
+      let x, y;
+      if (!r.w) { x = innerWidth / 2 - cw / 2; y = innerHeight / 2 - ch / 2; }
+      else if (r.x + r.w + cw + 24 < innerWidth) { x = r.x + r.w + 16; y = r.y + r.h / 2 - ch / 2; }
+      else if (r.y + r.h + ch + 20 < innerHeight) { x = r.x + r.w / 2 - cw / 2; y = r.y + r.h + 14; }
+      else { x = r.x + r.w / 2 - cw / 2; y = r.y - ch - 14; }
+      x = Math.max(16, Math.min(innerWidth - cw - 16, x));
+      y = Math.max(50, Math.min(innerHeight - ch - 16, y));
+      card.style.left = x + 'px'; card.style.top = y + 'px';
+    };
+    if (el && el.closest('.page')) {
+      const b = el.getBoundingClientRect();
+      if (b.top < 50 || b.bottom > innerHeight - 10) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); setTimeout(place, 420); return; }
+    }
+    place();
+  }
+
+  // ---------------- history ----------------
+  let histLimit = 30;
+  function renderHistory() {
+    const sel = $('#hist-filter');
+    const cur = sel.value;
+    const names = [...new Set(D.subjects.map((s) => s.name).concat(D.sessions.map((s) => s.subject)))];
+    sel.innerHTML = '<option value="">All subjects</option>' + `<option value="__dead"${cur === '__dead' ? ' selected' : ''}>Withered &amp; cancelled only</option>` + names.map((n) => `<option${n === cur ? ' selected' : ''}>${esc(n)}</option>`).join('');
+    $('#m-subject').innerHTML = activeSubjects().map((s) => `<option>${esc(s.name)}</option>`).join('');
+    const mt = $('#m-tree'), curTree = mt.value || D.selectedTree;
+    mt.innerHTML = window.Tree.SPECIES.filter((x) => owns(x.id)).sort(treeOrder)
+      .map((sp) => `<option value="${sp.id}"${sp.id === curTree ? ' selected' : ''}>${isFav(sp.id) ? '★ ' : ''}${esc(sp.name)} (${window.Tree.RARITIES[sp.rarity].name})</option>`).join('');
+    const f = sel.value;
+    const list = D.sessions.filter((s) => !f || (f === '__dead' ? (s.cancelled || isWithered(s)) : s.subject === f)).sort((a, b) => new Date(b.date) - new Date(a.date));
+    const groups = new Map();
+    list.forEach((s) => { const k = dayKey(new Date(s.date)); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(s); });
+    const keys = [...groups.keys()];
+    const host = $('#history-list');
+    if (!keys.length) { host.innerHTML = '<div class="empty">No sessions yet.</div>'; $('#hist-more').classList.add('hidden'); return; }
+    const today = dayKey(new Date()), yest = dayKey(addDays(new Date(), -1));
+    host.innerHTML = keys.slice(0, histLimit).map((k, gi) => {
+      const ss = groups.get(k);
+      const d = new Date(ss[0].date);
+      const name = k === today ? 'Today' : k === yest ? 'Yesterday' : d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+      return `<div class="day-group" style="--i:${Math.min(gi, 12)}"><div class="day-head"><span>${name}</span><span class="muted">${fmtDur(ss.filter(counted).reduce((a, s) => a + s.duration, 0))}</span></div><div class="sess-list">${ss.map((s, i) => sessRow(s, i)).join('')}</div></div>`;
+    }).join('');
+    paintTrees(host);
+    bindDeletes(host, renderHistory);
+    $('#hist-more').classList.toggle('hidden', keys.length <= histLimit);
+  }
+  function saveManual() {
+    const msg = $('#m-msg');
+    const sub = $('#m-subject').value, date = $('#m-date').value, st = $('#m-start').value, en = $('#m-end').value;
+    if (!sub || !date || !st || !en) { msg.textContent = 'Fill in every field.'; msg.style.color = '#f87171'; return; }
+    const start = new Date(`${date}T${st}`), end = new Date(`${date}T${en}`);
+    let dur = (end - start) / 1000;
+    if (dur <= 0) dur += 86400; // past midnight
+    if (dur <= 0 || dur > 86400) { msg.textContent = 'That time range doesn\'t look right.'; msg.style.color = '#f87171'; return; }
+    const tree = owns($('#m-tree').value) ? $('#m-tree').value : (owns(D.selectedTree) ? D.selectedTree : 'oak');
+    const grown = dur >= ROOT_SEC;
+    // added sessions plant their tree too, but earn no coins
+    const rec = { id: uid(), subject: sub, duration: Math.round(dur), date: start.toISOString(), manual: true, tree, outcome: grown ? 'grown' : 'withered', coins: 0 };
+    D.sessions.push(rec);
+    if (grown) D.trees.push({ id: uid(), species: tree, subject: sub, date: rec.date, duration: rec.duration, sessionId: rec.id, manual: true });
+    save();
+    msg.style.color = '';
+    checkAchievements();
+    msg.textContent = `Added ${fmtDur(dur)} of ${sub} with a${/^[aeiou]/i.test(window.Tree.get(tree).name) ? 'n' : ''} ${window.Tree.get(tree).name}${grown ? '' : ' (under 10 minutes, so it withered)'}.`;
+    renderHistory();
+  }
+
+  // ---------------- settings ----------------
+  function renderSettings() {
+    $('#set-name').value = D.profile.name || '';
+    $('#set-automini').classList.toggle('on', !!D.profile.autoMini);
+    renderThemeGrid($('#set-themes'));
+    renderSubjectSettings();
+  }
+  const ARCHIVE_ICON = '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4"/></svg>';
+  const RESTORE_ICON = '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>';
+  function renderSubjectSettings() {
+    const counts = {};
+    D.sessions.forEach((s) => { counts[s.subject] = (counts[s.subject] || 0) + s.duration; });
+    const row = (s, i) => `<div class="subj-row" style="--c:${s.color};--i:${i}" data-id="${s.id}">
+      <button class="swatch" title="Change colour"></button>
+      <input class="input" value="${esc(s.name)}" maxlength="40">
+      <span class="cnt">${fmtDur(counts[s.name] || 0)}</span>
+      <span class="row-btns">${s.archived
+        ? `<button class="icon-btn act-restore" title="Bring back to the timer">${RESTORE_ICON}</button>`
+        : `<button class="icon-btn act-archive" title="Finished: hide from the timer, keep in stats">${ARCHIVE_ICON}</button>`}
+      <button class="icon-btn act-remove" title="Remove">${XICON}</button></span></div>`;
+    const act = activeSubjects(), arch = D.subjects.filter((s) => s.archived);
+    $('#set-subjects').innerHTML = act.length ? act.map(row).join('') : '<div class="empty">No subjects yet.</div>';
+    $('#set-archived').innerHTML = arch.map(row).join('');
+    $('#archived-wrap').classList.toggle('hidden', !arch.length);
+    $$('#set-subjects .subj-row, #set-archived .subj-row').forEach((row) => {
+      const host = row.parentElement;
+      const s = D.subjects.find((x) => x.id === row.dataset.id);
+      $('.swatch', row).addEventListener('click', () => {
+        const open = $('.palette-pop', row);
+        $$('.palette-pop', host).forEach((p) => p.remove());
+        if (open) return;
+        const pop = document.createElement('div');
+        pop.className = 'palette-pop';
+        pop.innerHTML = PALETTE.map((c) => `<button style="--c:${c}" data-c="${c}"></button>`).join('');
+        row.appendChild(pop);
+        $$('button', pop).forEach((b) => b.addEventListener('click', () => {
+          s.color = b.dataset.c; save();
+          row.style.setProperty('--c', s.color);
+          pop.remove();
+          renderSubjectChips();
+        }));
+      });
+      const inp = $('.input', row);
+      inp.addEventListener('change', () => {
+        const v = inp.value.trim();
+        if (!v || (v !== s.name && subj(v))) { inp.value = s.name; inp.classList.add('shake'); setTimeout(() => inp.classList.remove('shake'), 500); return; }
+        const old = s.name;
+        s.name = v;
+        D.sessions.forEach((x) => { if (x.subject === old) x.subject = v; });
+        D.trees.forEach((x) => { if (x.subject === old) x.subject = v; });
+        if (D.active && D.active.subject === old) D.active.subject = v;
+        if (T.subject === old) T.subject = v;
+        save();
+        toast(`Renamed to ${esc(v)}`);
+        renderSubjectChips();
+      });
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
+      const slideOut = () => { row.style.height = row.offsetHeight + 'px'; row.classList.add('sess-row', 'removing'); setTimeout(renderSubjectSettings, 450); };
+      const arc = $('.act-archive', row);
+      if (arc) arc.addEventListener('click', () => {
+        if (D.active && D.active.subject === s.name) { toast('Finish the current session first'); return; }
+        s.archived = true; save(); slideOut(); renderSubjectChips();
+        toast(`${esc(s.name)} moved to finished subjects. Its stats are kept`);
+      });
+      const res = $('.act-restore', row);
+      if (res) res.addEventListener('click', () => {
+        s.archived = false; save(); slideOut(); renderSubjectChips();
+        toast(`${esc(s.name)} is back on the timer`);
+      });
+      $('.act-remove', row).addEventListener('click', async () => {
+        if (D.active && D.active.subject === s.name) { toast('Finish the current session first'); return; }
+        const has = D.sessions.some((x) => x.subject === s.name);
+        const ok = await modal({ title: `Remove ${esc(s.name)}?`, body: has ? 'Your past sessions stay in your history and stats, but the subject loses its colour. To just hide it from the timer, use the "finished" button instead.' : '', actions: [{ label: 'Keep', ghost: true, value: false }, { label: 'Remove', danger: true, value: true }] });
+        if (!ok) return;
+        D.subjects = D.subjects.filter((x) => x.id !== s.id);
+        save(); slideOut(); renderSubjectChips();
+      });
+    });
+  }
+  function addSubjectFromInput(inp) {
+    const v = inp.value.trim();
+    if (!v) return false;
+    const ex = subj(v);
+    if (ex && ex.archived) { ex.archived = false; inp.value = ''; save(); toast(`${esc(v)} is back on the timer`); return true; }
+    if (ex) { inp.classList.add('shake'); setTimeout(() => inp.classList.remove('shake'), 500); return false; }
+    D.subjects.push({ id: uid(), name: v, color: nextColor(), archived: false });
+    inp.value = '';
+    save();
+    return true;
+  }
+
+  // ---------------- import / export ----------------
+  function toCSV() {
+    const rows = [['Subject', 'Date', 'Time', 'Duration (min)', 'Duration (h:m:s)']];
+    D.sessions.filter(counted).sort((a, b) => new Date(a.date) - new Date(b.date)).forEach((s) => {
+      const d = new Date(s.date);
+      rows.push([s.subject, dayKey(d), `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`, +(s.duration / 60).toFixed(2), fmtHMS(s.duration)]);
+    });
+    return rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+  }
+  function parseCSVLine(line) {
+    const out = []; let cur = '', q = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (q) { if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; } else if (ch === '"') q = false; else cur += ch; }
+      else if (ch === '"') q = true; else if (ch === ',') { out.push(cur); cur = ''; } else cur += ch;
+    }
+    out.push(cur);
+    return out;
+  }
+  function parseCSV(text) {
+    const lines = text.replace(/^﻿/, '').split(/\r?\n/).filter((l) => l.trim());
+    if (lines.length < 2) return [];
+    const rows = lines.slice(1).map(parseCSVLine).filter((c) => c.length >= 4);
+    // old exports used the computer's local date format; work out day/month order
+    let dmy = true;
+    for (const r of rows) {
+      const m = r[1].match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/);
+      if (m) { if (+m[1] > 12) { dmy = true; break; } if (+m[2] > 12) { dmy = false; break; } }
+    }
+    const out = [];
+    for (const r of rows) {
+      const [subject, ds, ts, mins] = r;
+      const dur = Math.round(parseFloat(mins) * 60);
+      if (!subject || !(dur >= 0)) continue;
+      let y, mo, d;
+      let m = ds.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+      if (m) { y = +m[1]; mo = +m[2]; d = +m[3]; }
+      else if ((m = ds.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/))) {
+        y = +m[3]; if (y < 100) y += 2000;
+        if (dmy) { d = +m[1]; mo = +m[2]; } else { mo = +m[1]; d = +m[2]; }
+      } else { const p = new Date(ds); if (isNaN(p)) continue; y = p.getFullYear(); mo = p.getMonth() + 1; d = p.getDate(); }
+      let hh = 0, mm = 0, ss = 0;
+      const tm = (ts || '').trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([ap]\.?m\.?)?/i);
+      if (tm) {
+        hh = +tm[1]; mm = +tm[2]; ss = +(tm[3] || 0);
+        if (tm[4]) { const pm = /p/i.test(tm[4]); if (pm && hh < 12) hh += 12; if (!pm && hh === 12) hh = 0; }
+      }
+      const date = new Date(y, mo - 1, d, hh, mm, ss);
+      if (isNaN(date)) continue;
+      out.push({ subject: subject.trim(), duration: dur, date: date.toISOString() });
+    }
+    return out;
+  }
+  function parseOldHTML(text) {
+    const grab = (key) => {
+      const i = text.indexOf(`'${key}'`);
+      if (i < 0) return null;
+      const lineEnd = text.indexOf('\n', i);
+      const line = text.slice(i, lineEnd < 0 ? undefined : lineEnd);
+      let m = line.match(/JSON\.stringify\((\[[\s\S]*\])\)\s*\)\s*;?\s*$/);
+      if (!m) m = line.match(/\|\|\s*'(\[[\s\S]*?\])'\s*\)/);
+      if (!m) return null;
+      try { return JSON.parse(m[1]); } catch (e) { return null; }
+    };
+    const subjects = grab('vce_subjects') || [];
+    const sessions = grab('vce_sessions') || [];
+    return { subjects, sessions: sessions.filter((s) => s && s.subject && s.date) };
+  }
+  // Returns { added, skipped, subjects } after merging into D
+  function mergeImport(file) {
+    const name = file.name.toLowerCase();
+    let sessions = [], subjects = [], backup = null;
+    if (name.endsWith('.json')) {
+      const j = JSON.parse(file.content);
+      if (Array.isArray(j)) sessions = j;
+      else backup = normalise(j && typeof j === 'object' && (+j.version || 1) < SCHEMA ? migrate(j) : j);
+    } else if (name.endsWith('.csv')) {
+      sessions = parseCSV(file.content);
+    } else {
+      const o = parseOldHTML(file.content);
+      sessions = o.sessions; subjects = o.subjects;
+    }
+    if (backup) {
+      const keepActive = D.active;
+      const hadSetup = D.profile.setupDone;
+      // merge a backup: union of sessions/trees, keep the bigger coin total
+      const key = (s) => `${s.subject}|${s.date}|${s.duration}`;
+      const have = new Set(D.sessions.map(key));
+      let added = 0;
+      backup.sessions.forEach((s) => { if (!have.has(key(s))) { D.sessions.push(s); have.add(key(s)); added++; } });
+      const th = new Set(D.trees.map((t) => t.id));
+      backup.trees.forEach((t) => { if (!th.has(t.id)) D.trees.push(t); });
+      backup.subjects.forEach((s) => { if (!subj(s.name)) D.subjects.push({ id: s.id || uid(), name: s.name, color: s.color || nextColor(), archived: !!s.archived }); });
+      D.coins = Math.max(D.coins, backup.coins);
+      for (const [id, n] of Object.entries(backup.collection.owned || {})) D.collection.owned[id] = Math.max(D.collection.owned[id] || 0, n || 0);
+      D.collection.opened = Math.max(D.collection.opened || 0, backup.collection.opened || 0);
+      for (const [id, at] of Object.entries(backup.achievements || {})) if (!D.achievements[id] || at < D.achievements[id]) D.achievements[id] = at;
+      backup.favTrees.forEach((id) => { if (!D.favTrees.includes(id)) D.favTrees.push(id); });
+      if (!hadSetup) { D.profile = Object.assign(D.profile, backup.profile, { setupDone: false }); }
+      D.active = keepActive;
+      return { added, skipped: backup.sessions.length - added, total: backup.sessions.length };
+    }
+    subjects.forEach((s) => ensureSubject(String(s)));
+    const key = (s) => `${s.subject}|${new Date(s.date).toISOString()}|${s.duration}`;
+    const have = new Set(D.sessions.map(key));
+    let added = 0;
+    sessions.forEach((s) => {
+      if (!s.subject || isNaN(new Date(s.date)) || !(s.duration >= 0)) return;
+      const rec = { id: uid(), subject: String(s.subject), duration: Math.round(+s.duration), date: new Date(s.date).toISOString() };
+      if (have.has(key(rec))) return;
+      have.add(key(rec));
+      D.sessions.push(rec);
+      ensureSubject(rec.subject);
+      added++;
+    });
+    return { added, skipped: sessions.length - added, total: sessions.length };
+  }
+  async function doImport(msgEl) {
+    const f = await window.api.importFile();
+    if (!f) return null;
+    try {
+      const r = mergeImport(f);
+      save(true);
+      checkAchievements();
+      const txt = r.total === 0 ? `No sessions found in ${f.name}.` : `Imported ${r.added} session${r.added === 1 ? '' : 's'}${r.skipped ? ` (${r.skipped} already here or unreadable)` : ''}.`;
+      if (msgEl) msgEl.textContent = txt;
+      toast(txt, 3500);
+      return r;
+    } catch (e) {
+      const txt = `Couldn't read ${f.name}. Is it a file from this app, a CSV export, or the old tracker?`;
+      if (msgEl) msgEl.textContent = txt;
+      toast(txt, 4000);
+      return null;
+    }
+  }
+
+  // ---------------- onboarding ----------------
+  let obStep = 0;
+  const obPicked = new Set();
+  function showOnboarding() {
+    document.body.classList.add('onboarding');
+    $('#onboarding').classList.remove('hidden', 'closing');
+    $('#ob-name').value = D.profile.name || '';
+    obPicked.clear();
+    activeSubjects().forEach((s) => obPicked.add(s.name));
+    $('#ob-tree').innerHTML = window.Tree.build('blossom', 'ob1');
+    $('#ob-tree').classList.add('alive');
+    const t = $('#ob-tree .tree');
+    window.Tree.setGrowth(t, 0, 0);
+    // grow the welcome tree from seed to full in a few seconds
+    let p = 0;
+    const iv = setInterval(() => { p += 0.07; window.Tree.setGrowth(t, p, Math.max(0, p - 1) * 2); if (p >= 1.5) clearInterval(iv); }, 160);
+    obGoto(0, 1);
+  }
+  function renderObChips() {
+    const names = [...new Set([...obPicked].concat(PRESET_SUBJECTS))];
+    $('#ob-chips').innerHTML = names.map((n, i) => `<button class="chip${obPicked.has(n) ? ' selected' : ''}" style="--i:${i};--c:${(subj(n) || {}).color || PALETTE[i % PALETTE.length]}" data-s="${esc(n)}"><span class="check">${CHECK}</span>${esc(n)}</button>`).join('');
+    $$('#ob-chips .chip').forEach((c) => c.addEventListener('click', () => {
+      const n = c.dataset.s;
+      if (obPicked.has(n)) obPicked.delete(n); else obPicked.add(n);
+      c.classList.toggle('selected', obPicked.has(n));
+      c.animate([{ transform: 'scale(.9)' }, { transform: 'scale(1.06)' }, { transform: 'scale(1)' }], { duration: 350, easing: 'cubic-bezier(.34,1.56,.64,1)' });
+      updateObNext();
+    }));
+    updateObNext();
+  }
+  function updateObNext() {
+    const b = $('#ob-subj-next');
+    b.textContent = obPicked.size ? `Continue with ${obPicked.size} subject${obPicked.size > 1 ? 's' : ''}` : 'Pick at least one';
+    b.disabled = !obPicked.size;
+  }
+  function obGoto(n, dir) {
+    obStep = n;
+    $$('.ob-step').forEach((s) => {
+      const on = +s.dataset.step === n;
+      s.classList.toggle('active', on);
+      s.classList.remove('in-next', 'in-prev');
+      if (on) { void s.offsetWidth; s.classList.add(dir >= 0 ? 'in-next' : 'in-prev'); }
+    });
+    $$('.ob-dots span').forEach((d, i) => { d.classList.toggle('active', i === n); d.classList.toggle('done', i < n); });
+    if (n === 1) renderObChips();
+    if (n === 2) renderThemeGrid($('#ob-themes'));
+    if (n === 3) {
+      const nm = $('#ob-name').value.trim();
+      $('#ob-done-title').textContent = nm ? `You're all set, ${nm}` : 'You\'re all set';
+      $('#ob-tree-final').innerHTML = window.Tree.build('oak', 'ob2');
+      $('#ob-tree-final').classList.add('alive');
+      const t = $('#ob-tree-final .tree');
+      window.Tree.setGrowth(t, 0, 0);
+      setTimeout(() => window.Tree.setGrowth(t, 0.3, 0), 150);
+      setTimeout(() => window.Tree.setGrowth(t, 0.7, 0), 700);
+      setTimeout(() => window.Tree.setGrowth(t, 1, 0.3), 1300);
+    }
+  }
+  function finishOnboarding() {
+    D.profile.name = $('#ob-name').value.trim();
+    // subjects: keep chosen ones (preserving colours), add new ones
+    // unpicked subjects with history are kept as "finished" so their stats keep their colour
+    const used = new Set(D.sessions.map((x) => x.subject));
+    D.subjects = D.subjects.filter((s) => obPicked.has(s.name) || s.archived || used.has(s.name));
+    D.subjects.forEach((s) => { s.archived = !obPicked.has(s.name); });
+    [...obPicked].forEach((n) => ensureSubject(n));
+    D.profile.setupDone = true;
+    save(true);
+    const b = $('#ob-finish').getBoundingClientRect();
+    burst(b.left + b.width / 2, b.top, { n: 70, up: true, speed: 9 });
+    $('#onboarding').classList.add('closing');
+    setTimeout(() => {
+      $('#onboarding').classList.add('hidden');
+      document.body.classList.remove('onboarding');
+      enterApp();
+      if (!D.profile.tutorialSeen) setTimeout(startTour, 900);
+    }, 650);
+  }
+
+  function enterApp() {
+    renderCoins(true);
+    const pg = $(`#page-${currentPage}`);
+    renderPage(currentPage);
+    pg.classList.remove('enter'); void pg.offsetWidth; pg.classList.add('enter');
+    requestAnimationFrame(moveIndicator);
+  }
+
+  // ---------------- wiring ----------------
+  function wire() {
+    $$('.nav-item').forEach((b) => b.addEventListener('click', () => go(b.dataset.page)));
+    $('#btn-start').addEventListener('click', start);
+    $('#btn-stop').addEventListener('click', stop);
+    $('#btn-cancel').addEventListener('click', () => cancel(false));
+    $('#btn-mini').addEventListener('click', () => window.api.openMini());
+    $('#week-prev').addEventListener('click', () => { W.offset++; renderWeek(-1); });
+    $('#week-next').addEventListener('click', () => { if (W.offset) { W.offset--; renderWeek(1); } });
+    $('#tour-next').addEventListener('click', () => { if (tourStep >= TOUR.length - 1) return endTour(); tourStep++; showTourStep(); });
+    $('#tour-back').addEventListener('click', () => { if (tourStep) { tourStep--; showTourStep(); } });
+    $('#tour-skip').addEventListener('click', endTour);
+    $('#set-tutorial').addEventListener('click', () => { if (T.state !== 'idle') return toast('Finish the current session first'); go('timer'); setTimeout(startTour, 500); });
+    addEventListener('resize', () => { if (!$('#tour').classList.contains('hidden')) showTourStep(); });
+    document.addEventListener('keydown', (e) => {
+      if (!$('#tour').classList.contains('hidden')) {
+        if (e.key === 'Escape') endTour();
+        if (e.key === 'ArrowRight' || e.key === 'Enter') $('#tour-next').click();
+        if (e.key === 'ArrowLeft' && tourStep) $('#tour-back').click();
+        e.preventDefault();
+        return;
+      }
+      if (e.target.matches('input, select, textarea') || $('.modal-back') || !$('#onboarding').classList.contains('hidden') || !$('#case-overlay').classList.contains('hidden')) return;
+      if (e.code === 'Space' && currentPage === 'timer') { e.preventDefault(); start(); }
+      if (e.ctrlKey && e.key >= '1' && e.key <= '6') go(['timer', 'stats', 'garden', 'trees', 'history', 'settings'][+e.key - 1]);
+    });
+
+    // stats
+    $$('#period-seg button').forEach((b) => b.addEventListener('click', () => {
+      if (S.period === b.dataset.p) return;
+      S.period = b.dataset.p;
+      S.anchor = anchorFor(S.period, new Date());
+      renderStats(true);
+    }));
+    $$('#year-split button').forEach((b) => b.addEventListener('click', () => { S.yearSplit = b.dataset.s; renderStats(true); }));
+    $('#prev-period').addEventListener('click', () => { S.anchor = shiftAnchor(-1); renderStats(false, -1); });
+    $('#next-period').addEventListener('click', () => { S.anchor = shiftAnchor(1); renderStats(false, 1); });
+    $('#today-period').addEventListener('click', () => { S.anchor = anchorFor(S.period, new Date()); renderStats(false, 1); });
+
+    // history
+    $('#hist-filter').addEventListener('change', () => { histLimit = 30; renderHistory(); });
+    $('#hist-more').addEventListener('click', () => { histLimit += 30; renderHistory(); });
+    $('#btn-add-manual').addEventListener('click', () => {
+      const c = $('#manual-card');
+      c.classList.toggle('collapsed');
+      if (!c.classList.contains('collapsed')) {
+        const now = new Date();
+        $('#m-date').value = dayKey(now);
+        const st = new Date(now - 3600e3);
+        $('#m-start').value = `${pad(st.getHours())}:${pad(st.getMinutes())}`;
+        $('#m-end').value = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
+        $('#m-msg').textContent = '';
+      }
+    });
+    $('#m-close').addEventListener('click', () => $('#manual-card').classList.add('collapsed'));
+    $('#m-save').addEventListener('click', saveManual);
+
+    // settings
+    $('#set-name').addEventListener('change', () => { D.profile.name = $('#set-name').value.trim(); save(); });
+    $('#set-automini').addEventListener('click', () => { D.profile.autoMini = !D.profile.autoMini; $('#set-automini').classList.toggle('on', D.profile.autoMini); save(); });
+    const addS = () => { if (addSubjectFromInput($('#set-new-subject'))) { renderSubjectSettings(); renderSubjectChips(); } };
+    $('#set-add-subject').addEventListener('click', addS);
+    $('#set-new-subject').addEventListener('keydown', (e) => { if (e.key === 'Enter') addS(); });
+    $('#set-export').addEventListener('click', async () => {
+      const p = await window.api.exportFile({ content: JSON.stringify(D, null, 1), defaultName: `study-tracker-backup-${dayKey(new Date())}.json`, filters: [{ name: 'Backup', extensions: ['json'] }] });
+      if (p) toast('Backup saved');
+    });
+    $('#set-export-csv').addEventListener('click', async () => {
+      if (!D.sessions.length) return toast('No sessions to export yet');
+      const p = await window.api.exportFile({ content: toCSV(), defaultName: `study-sessions-${dayKey(new Date())}.csv`, filters: [{ name: 'CSV', extensions: ['csv'] }] });
+      if (p) toast('Sessions exported');
+    });
+    $('#set-import').addEventListener('click', async () => { if (await doImport()) renderSettings(); });
+    $('#set-rerun').addEventListener('click', () => { if (T.state !== 'idle') return toast('Finish the current session first'); showOnboarding(); });
+    $('#set-clear').addEventListener('click', async () => {
+      if (T.state !== 'idle') return toast('Finish the current session first');
+      const ok = await modal({ title: 'Delete everything?', body: 'This removes all sessions, trees, coins and settings from this PC. Export a backup first if you might want it back.', actions: [{ label: 'Keep my data', ghost: true, value: false }, { label: 'Delete all', danger: true, value: true }] });
+      if (!ok) return;
+      const sure = await modal({ title: 'Are you sure?', body: 'This can\'t be undone.', actions: [{ label: 'No', ghost: true, value: false }, { label: 'Yes, delete it all', danger: true, value: true }] });
+      if (!sure) return;
+      D = blank();
+      save(true);
+      T.subject = null;
+      renderCoins(true);
+      applyTheme('forest');
+      showOnboarding();
+    });
+
+    // onboarding
+    $$('#onboarding [data-next]').forEach((b) => b.addEventListener('click', () => obGoto(obStep + 1, 1)));
+    $$('#onboarding [data-back]').forEach((b) => b.addEventListener('click', () => obGoto(obStep - 1, -1)));
+    $('#ob-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') obGoto(1, 1); });
+    const obAdd = () => {
+      const inp = $('#ob-custom');
+      const v = inp.value.trim();
+      if (!v) return;
+      obPicked.add(v);
+      inp.value = '';
+      renderObChips();
+    };
+    $('#ob-add').addEventListener('click', obAdd);
+    $('#ob-custom').addEventListener('keydown', (e) => { if (e.key === 'Enter') obAdd(); });
+    $('#ob-import').addEventListener('click', async () => {
+      const r = await doImport($('#ob-import-msg'));
+      if (r) {
+        activeSubjects().forEach((s) => obPicked.add(s.name));
+        if (D.profile.name) $('#ob-name').value = D.profile.name;
+        applyTheme(D.profile.theme);
+      }
+    });
+    $('#ob-finish').addEventListener('click', finishOnboarding);
+  }
+
+  // ---------------- automatic updates ----------------
+  let updState = { status: 'idle' };
+  let updPillDismissed = false;
+  function renderUpdate(st) {
+    updState = st || updState;
+    const s = updState;
+    const dot = $('#upd-dot'), title = $('#upd-title'), sub = $('#upd-sub'), bar = $('#upd-bar');
+    const check = $('#upd-check'), go = $('#upd-restart');
+    if (!dot) return;
+    const busy = ['checking', 'downloading', 'unpacking'].includes(s.status);
+    dot.className = 'upd-dot ' + ({ current: 'ok', ready: 'ready', error: 'err' }[s.status] || (busy ? 'busy' : ''));
+    const texts = {
+      idle: ['Updates install by themselves', 'New versions download in the background and install when you close the app. Your saves are never touched.'],
+      checking: ['Checking for updates…', 'Looking for a newer version.'],
+      current: ["You're up to date", `Version ${APP_VERSION} is the newest. New versions install by themselves when you close the app.`],
+      downloading: [`Downloading version ${esc(s.version)}…`, 'Keep studying, this happens in the background.'],
+      unpacking: [`Getting version ${esc(s.version)} ready…`, 'Almost done.'],
+      ready: [`Version ${esc(s.version)} is ready`, 'It installs when you close the app, or press Restart to update now. Your saves are never touched.'],
+      error: ["Couldn't check for updates", `${esc(s.error || 'No internet?')} It'll try again later.`],
+      unsupported: ['Automatic updates are off here', 'They only work in the installed Study Tracker folder on Windows.'],
+    }[s.status] || ['Updates', ''];
+    title.innerHTML = texts[0];
+    sub.innerHTML = texts[1];
+    check.classList.toggle('hidden', s.status === 'ready' || s.status === 'unsupported');
+    check.disabled = busy;
+    go.classList.toggle('hidden', s.status !== 'ready');
+    bar.classList.toggle('hidden', !busy);
+    bar.classList.toggle('indet', s.status !== 'downloading' || !s.progress);
+    $('span', bar).style.width = `${Math.round((s.progress || 0) * 100)}%`;
+    const pill = $('#upd-pill');
+    if (s.status === 'ready' && !updPillDismissed) {
+      $('.upd-pill-text', pill).textContent = `Version ${s.version} is ready`;
+      if (pill.classList.contains('hidden')) { pill.classList.remove('hidden', 'out'); }
+    } else if (!pill.classList.contains('hidden')) hidePill();
+  }
+  function hidePill() {
+    const pill = $('#upd-pill');
+    pill.classList.add('out');
+    setTimeout(() => { pill.classList.add('hidden'); pill.classList.remove('out'); }, 360);
+  }
+  async function restartToUpdate() {
+    if (T.state === 'running') {
+      const ok = await modal({ title: 'Restart now?', body: 'Your timer will pause while the app updates. Press Resume afterwards to keep going.', actions: [{ label: 'Not now', ghost: true, value: false }, { label: 'Restart', primary: true, value: true }] });
+      if (!ok) return;
+    }
+    try { save(true); } catch (e) {}
+    const done = await window.api.restartToUpdate();
+    if (!done) toast("Couldn't start the update. It'll try again when you close the app", 4000);
+  }
+  function setupUpdates() {
+    if (!window.api.updateState) return;
+    window.api.on('update:state', (st) => renderUpdate(st));
+    window.api.updateState().then((st) => renderUpdate(st));
+    $('#upd-check').addEventListener('click', async () => {
+      const st = await window.api.checkForUpdate();
+      renderUpdate(st);
+      if (st.status === 'current') toast("You're on the newest version");
+    });
+    $('#upd-restart').addEventListener('click', restartToUpdate);
+    $('#upd-pill-go').addEventListener('click', restartToUpdate);
+    $('#upd-pill-x').addEventListener('click', () => { updPillDismissed = true; hidePill(); });
+  }
+
+  // ---------------- boot ----------------
+  async function boot() {
+    APP_VERSION = await window.api.version();
+    const raw = await window.api.load();
+    const before = raw && typeof raw === 'object' ? (+raw.version || 1) : SCHEMA;
+    if (raw && before < SCHEMA) await window.api.backupBeforeUpgrade(raw, before);
+    D = normalise(migrate(raw));
+    if (raw && before < SCHEMA) save(true);
+    $('#app-version').textContent = `Version ${APP_VERSION} · save format ${SCHEMA}`;
+    applyTheme(D.profile.theme);
+    makeStars();
+    updateDayPhase();
+    buildOdometer();
+    wire();
+    setupUpdates();
+    // restore a session that was running when the app closed (it resumes paused)
+    if (D.active) {
+      D.active.segStart = null;
+      T.state = 'paused';
+      T.subject = D.active.subject;
+      T.tree = D.active.species;
+      mountTree(D.active.species);
+      const g = window.Tree.growthFor(elapsedSec());
+      window.Tree.setGrowth(treeSvg, g.p, g.g);
+    }
+    loop();
+    setTimeout(() => {
+      document.body.classList.remove('booting');
+      if (!D.profile.setupDone) showOnboarding();
+      else {
+        enterApp();
+        if (D.active) toast('Your last session was paused when the app closed. Press Resume to continue', 4500);
+        if (!D.profile.tutorialSeen && !D.active) setTimeout(startTour, 1100);
+        if (!readOnly) {
+          if (!D.badgesSeeded) {
+            const n = checkAchievements(true).length;
+            D.badgesSeeded = true; save();
+            if (n) setTimeout(() => toast(`New: Achievements! You've already earned ${n} badge${n === 1 ? '' : 's'}`, 4200), 1600);
+          } else setTimeout(() => checkAchievements(), 1500);
+        }
+        if (readOnly) modal({ title: 'This save is from a newer version', body: 'Your save data was made by a newer version of Study Tracker. This older version will show it but won\'t change it, so nothing gets lost. Download the latest version to keep tracking.' });
+      }
+    }, 80);
+    // refresh "today" and the greeting when the date rolls over
+    setInterval(() => { updateDayPhase(); if (currentPage === 'timer') { renderToday(); } }, 60000);
+  }
+  window.__dbg = { get D() { return D; }, T, S };
+  boot();
+})();

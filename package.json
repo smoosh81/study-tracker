@@ -1,0 +1,60 @@
+{
+  "name": "study-tracker",
+  "version": "1.4.0",
+  "description": "Study Tracker: a stopwatch for studying that grows a garden",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win dir --x64"
+  },
+  "author": "Study Tracker",
+  "devDependencies": {
+    "electron": "^43.7.9",
+    "electron-builder": "^26.0.12",
+    "pe-library": "^1.0.1",
+    "resedit": "^2.0.3"
+  },
+  "productName": "Study Tracker",
+  "build": {
+    "appId": "com.studytracker.app",
+    "productName": "Study Tracker",
+    "files": [
+      "main.js",
+      "preload.js",
+      "updater.js",
+      "renderer/**/*",
+      "build/icon.png"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "dir"
+      ],
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Study Tracker",
+      "artifactName": "Study-Tracker-Setup-${version}.exe",
+      "deleteAppDataOnUninstall": false
+    },
+    "portable": {
+      "artifactName": "Study-Tracker-Portable-${version}.exe"
+    },
+    "afterPack": "build/afterPack.js",
+    "publish": null,
+    "electronLanguages": [
+      "en-US",
+      "en-GB"
+    ],
+    "compression": "maximum"
+  },
+  "updateRepo": "smoosh81/study-tracker"
+}

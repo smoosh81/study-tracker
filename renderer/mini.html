@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+<title>Mini player</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: transparent; overflow: hidden; font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; user-select: none; }
+  :root { --bg:#0e1913; --surface:#16281e; --surface2:#1d3427; --text:#e8f1ea; --muted:#90a898; --accent:#4ade80; --accent2:#a3e635; --on-accent:#06240f; --border:rgba(255,255,255,.08); --c: var(--accent); --ease: cubic-bezier(.22,1,.36,1); --spring: cubic-bezier(.34,1.56,.64,1); }
+  .wrap { position: absolute; inset: 4px; border-radius: 20px; background: color-mix(in srgb, var(--surface) 94%, transparent); border: 1px solid var(--border); color: var(--text);
+    display: flex; align-items: center; gap: 10px; padding: 0 10px 0 8px; -webkit-app-region: drag; box-shadow: 0 6px 18px rgba(0,0,0,.35);
+    animation: in .5s var(--spring); transition: background .5s, border-radius .4s var(--ease); overflow: hidden; }
+  @keyframes in { from { opacity: 0; transform: scale(.85) translateY(-8px); } }
+  .badge { position: relative; width: 60px; height: 60px; flex-shrink: 0; transition: width .4s var(--ease), height .4s var(--ease); }
+  .badge svg.ring { position: absolute; inset: 0; transform: rotate(-90deg); }
+  .badge circle { fill: none; stroke-width: 5; }
+  .badge .tr { stroke: var(--surface2); }
+  .badge .pr { stroke: var(--c); stroke-linecap: round; transition: stroke-dashoffset 1s linear, stroke .4s; }
+  .badge .tree-box { position: absolute; inset: 7px; border-radius: 50%; overflow: hidden; background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 18%, var(--surface2)), var(--surface2)); }
+  .badge .tree-box svg { width: 100%; height: 100%; }
+  .info { flex: 1; min-width: 92px; display: flex; flex-direction: column; gap: 1px; }
+  .time { font-family: "Segoe UI Variable Display", "Segoe UI", sans-serif; font-weight: 700; font-size: 22px; font-variant-numeric: tabular-nums; letter-spacing: -.3px; line-height: 1.1; transition: font-size .4s var(--ease), opacity .3s; }
+  .paused .time { animation: blink 1.6s ease-in-out infinite; }
+  @keyframes blink { 50% { opacity: .45; } }
+  .sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; transition: opacity .3s, max-height .4s; max-height: 20px; }
+  .sub i { width: 7px; height: 7px; border-radius: 50%; background: var(--c); flex-shrink: 0; }
+  .btns { display: flex; gap: 4px; -webkit-app-region: no-drag; transition: opacity .3s; }
+  button { width: 30px; height: 30px; border-radius: 10px; border: none; background: transparent; color: var(--text); cursor: pointer; display: grid; place-items: center; transition: background .2s, transform .3s var(--spring); }
+  button:hover { background: var(--surface2); transform: scale(1.08); }
+  button:active { transform: scale(.9); }
+  button svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2.3; stroke-linecap: round; stroke-linejoin: round; }
+  button.fillic svg { fill: currentColor; stroke: none; }
+  #toggle { background: var(--accent); color: var(--on-accent); }
+  .ic-play { display: none; }
+  .paused .ic-play { display: block; }
+  .paused .ic-pause { display: none; }
+  .col { display: flex; flex-direction: column; gap: 2px; }
+  .col button { width: 24px; height: 24px; border-radius: 8px; }
+  .col button svg { width: 13px; height: 13px; }
+  /* compact: just a pill with time */
+  .compact .wrap { border-radius: 999px; padding: 0 6px 0 4px; gap: 8px; }
+  .compact .badge { width: 32px; height: 32px; }
+  .compact .badge .tree-box { inset: 4px; }
+  .compact .badge circle { stroke-width: 4; }
+  .compact .time { font-size: 16px; }
+  .compact .sub, .compact #stop, .compact #close { display: none; }
+  .close-btn { align-self: flex-start; margin-top: 6px; width: 24px; height: 24px; border-radius: 8px; color: var(--muted); }
+  .close-btn svg { width: 12px; height: 12px; }
+  .close-btn:hover { background: #ef4444; color: #fff; }
+  .compact .col { flex-direction: row; }
+  .compact .btns button { width: 26px; height: 26px; }
+  .rooted .pr { stroke: var(--accent2); }
+  .tree .part, .tree .gpart { transform-box: fill-box; transform-origin: center; transition: transform 1.4s var(--ge, var(--spring)), opacity .6s; }
+  .tree .part[data-origin="top"] { transform-origin: center top; }
+  .tree.fx-hue .canopy { animation: hue 8s linear infinite; }
+  @keyframes hue { to { filter: hue-rotate(360deg); } }
+  .tree .part[data-origin="bottom"] { transform-origin: center bottom; }
+  .tree .part[data-origin="left"] { transform-origin: left center; }
+  .tree .part[data-origin="right"] { transform-origin: right center; }
+  .tree .grow { transform-origin: 100px 212px; transition: transform 1.6s var(--ease); }
+  .tree .sway { transform-origin: 100px 212px; animation: sway 6s ease-in-out infinite; }
+  .tree .seed { transition: opacity .8s; }
+  .tree .shadow { display: none; }
+  @keyframes sway { 0%, 100% { transform: rotate(-2deg); } 50% { transform: rotate(2deg); } }
+</style>
+</head>
+<body>
+  <div class="wrap" id="wrap">
+    <div class="badge">
+      <svg class="ring" viewBox="0 0 60 60"><circle class="tr" cx="30" cy="30" r="27"/><circle class="pr" id="pr" cx="30" cy="30" r="27" stroke-dasharray="169.6" stroke-dashoffset="169.6"/></svg>
+      <div class="tree-box" id="tree-box"></div>
+    </div>
+    <div class="info">
+      <div class="time" id="time">00:00:00</div>
+      <div class="sub"><i></i><span id="subject">Studying</span></div>
+    </div>
+    <div class="btns">
+      <button id="toggle" class="fillic" title="Pause / resume"><svg class="ic-pause" viewBox="0 0 24 24"><path d="M7 4h4v16H7zM13 4h4v16h-4z"/></svg><svg class="ic-play" viewBox="0 0 24 24"><path d="M7 4.5v15l13-7.5z"/></svg></button>
+      <button id="stop" class="fillic" title="Stop and save"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
+      <div class="col">
+        <button id="expand" title="Back to the full app"><svg viewBox="0 0 24 24"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/></svg></button>
+        <button id="shrink" title="Shrink / grow"><svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg></button>
+      </div>
+      <button id="close" class="close-btn" title="Close the mini player (your timer keeps going)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+  </div>
+<script src="tree.js"></script>
+<script src="mini.js"></script>
+</body>
+</html>

@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'">
+<title>Study Tracker</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-theme="forest" class="booting">
+
+<div id="titlebar">
+  <div class="tb-brand"><span class="tb-logo"></span><span>Study Tracker</span></div>
+  <div class="tb-right">
+    <div class="coin-pill" id="coin-pill" title="Coins earned from trees">
+      <span class="coin"></span><span id="coin-count">0</span>
+    </div>
+  </div>
+</div>
+
+<div id="app">
+  <nav id="sidebar">
+    <div class="nav-indicator" id="nav-indicator"></div>
+    <button class="nav-item active" data-page="timer"><svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6M12 2v3"/></svg><span>Timer</span></button>
+    <button class="nav-item" data-page="stats"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><span>Stats</span></button>
+    <button class="nav-item" data-page="garden"><svg viewBox="0 0 24 24"><path d="M12 22v-8M12 14c-4 0-7-3-7-7 4 0 7 3 7 7zM12 12c0-4 3-7 7-7 0 4-3 7-7 7z"/></svg><span>Garden</span></button>
+    <button class="nav-item" data-page="trees"><svg viewBox="0 0 24 24"><path d="M3 9l9-5 9 5v9l-9 5-9-5z"/><path d="M3 9l9 5 9-5M12 14v9"/></svg><span>Trees</span></button>
+    <button class="nav-item" data-page="badges"><svg viewBox="0 0 24 24"><circle cx="12" cy="9" r="6"/><path d="M8.5 13.8 7 22l5-3 5 3-1.5-8.2"/><path d="M12 6.5l.9 1.8 2 .3-1.5 1.4.4 2-1.8-1-1.8 1 .4-2-1.5-1.4 2-.3z" fill="currentColor" stroke="none"/></svg><span>Badges</span></button>
+    <button class="nav-item" data-page="history"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg><span>History</span></button>
+    <div class="nav-spacer"></div>
+    <button class="nav-item" data-page="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Settings</span></button>
+  </nav>
+
+  <main id="view">
+    <!-- TIMER -->
+    <section class="page active" id="page-timer">
+      <header class="page-head stagger" style="--i:0">
+        <div>
+          <h1 id="greeting">Ready to focus?</h1>
+          <p class="sub" id="greeting-sub">Pick a subject and start the stopwatch.</p>
+        </div>
+        <div class="head-stats">
+          <div class="mini-stat"><span class="ms-label">Today</span><span class="ms-val" id="today-total">0m</span></div>
+          <div class="mini-stat"><span class="ms-label">Streak</span><span class="ms-val" id="streak">0 days</span></div>
+        </div>
+      </header>
+
+      <div class="timer-layout">
+        <div class="card timer-card stagger" style="--i:1">
+          <div class="subject-zone" id="subject-zone"><div class="subject-zone-inner">
+            <div class="label-row"><span class="label">Subject</span><span class="hint" id="subject-hint">Choose what you're studying</span></div>
+            <div class="chips" id="subject-chips"></div>
+            <div class="label-row tree-label"><span class="label">Tree</span><span class="hint" id="tree-hint"></span></div>
+            <div class="tree-strip" id="tree-chips"></div>
+          </div></div>
+          <div class="active-subject" id="active-subject"><span class="dot"></span><span class="name"></span><span class="state-tag" id="state-tag">Studying</span></div>
+
+          <div class="clock-wrap">
+            <svg class="ring" viewBox="0 0 300 300">
+              <circle cx="150" cy="150" r="132" class="ring-track"/>
+              <circle cx="150" cy="150" r="132" class="ring-prog" id="ring-prog"/>
+              <circle cx="150" cy="150" r="132" class="ring-hour" id="ring-hour"/>
+              <circle cx="282" cy="150" r="7" class="ring-knob" id="ring-knob"/>
+            </svg>
+            <div class="clock-center">
+              <div class="odometer" id="odometer"></div>
+              <div class="clock-caption" id="clock-caption">00:00 until your tree takes root</div>
+            </div>
+          </div>
+
+          <div class="controls">
+            <button class="btn ctl ghost" id="btn-cancel" title="Cancel session (time is not saved)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg><span>Cancel</span></button>
+            <button class="btn ctl primary big" id="btn-start"><svg class="ic-play" viewBox="0 0 24 24"><path d="M7 4.5v15l13-7.5z"/></svg><svg class="ic-pause" viewBox="0 0 24 24"><path d="M7 4h4v16H7zM13 4h4v16h-4z"/></svg><span id="start-label">Start</span></button>
+            <button class="btn ctl ghost" id="btn-stop" title="Stop and save the session"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg><span>Stop</span></button>
+          </div>
+          <button class="btn link mini-launch" id="btn-mini"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><rect x="5" y="6" width="8" height="5" rx="1" class="fill"/></svg>Open mini player</button>
+        </div>
+
+        <div class="card tree-card stagger" style="--i:2">
+          <div class="stage" id="stage">
+            <div class="sky"><div class="night-sky"></div><div class="stars"></div><div class="sun"></div><div class="moon"></div><div class="cloud c1"></div><div class="cloud c2"></div></div>
+            <div class="hills"><div class="hill h1"></div><div class="hill h2"></div></div>
+            <div class="pollen" id="pollen"></div>
+            <div class="tree-holder" id="tree-holder"></div>
+            <div class="plot-stage" id="plot-stage">
+              <div class="plot-nav"><button class="icon-btn sm" id="week-prev" title="Previous week"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button><span class="week-label"><span id="week-label">This week</span></span><button class="icon-btn sm" id="week-next" title="Next week"><svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg></button></div>
+              <div class="plot-host" id="week-plot"></div>
+            </div>
+          </div>
+          <div class="tree-info">
+            <div class="tree-status" id="tree-status">Start the timer to plant a seed</div>
+            <div class="root-bar"><div class="root-fill" id="root-fill"></div><div class="root-mark"></div></div>
+            <div class="root-legend"><span>Seed</span><span id="root-legend-r">Takes root at 10:00</span></div>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- STATS -->
+    <section class="page" id="page-stats">
+      <header class="page-head stagger" style="--i:0">
+        <div><h1>Your study stats</h1><p class="sub">See where your time went.</p></div>
+        <div class="seg" id="period-seg">
+          <div class="seg-pill"></div>
+          <button data-p="day" class="active">Day</button><button data-p="week">Week</button><button data-p="month">Month</button><button data-p="year">Year</button><button data-p="all">All time</button>
+        </div>
+      </header>
+      <div class="period-nav stagger" style="--i:1">
+        <button class="icon-btn" id="prev-period"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
+        <div class="period-label" id="period-label"><span></span></div>
+        <button class="icon-btn" id="next-period"><svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg></button>
+        <button class="btn small ghost" id="today-period">Jump to now</button>
+      </div>
+      <div class="stat-cards stagger" style="--i:2" id="stat-cards">
+        <div class="stat"><span class="s-label">Total time</span><span class="s-val" id="st-total">0h</span></div>
+        <div class="stat"><span class="s-label">Sessions</span><span class="s-val" id="st-sessions">0</span></div>
+        <div class="stat"><span class="s-label" id="st-avg-label">Daily average</span><span class="s-val" id="st-avg">0h</span></div>
+        <div class="stat"><span class="s-label">Top subject</span><span class="s-val small" id="st-top">-</span></div>
+      </div>
+      <div class="card plot-card stagger" style="--i:3">
+        <div class="card-head"><h3>Your forest</h3><span class="plot-counts" id="stats-plot-counts"></span></div>
+        <div class="plot-host stats-plot" id="stats-plot"></div>
+      </div>
+      <div class="stats-grid">
+        <div class="card stagger" style="--i:3">
+          <div class="card-head"><h3>Time per subject</h3></div>
+          <div class="donut-wrap">
+            <div class="donut-box">
+              <svg viewBox="0 0 220 220" class="donut" id="donut"><circle cx="110" cy="110" r="84" class="donut-track"/><g id="donut-segs"></g></svg>
+              <div class="donut-center"><span id="donut-total">0h</span><small>studied</small></div>
+            </div>
+            <div class="legend" id="legend"></div>
+          </div>
+        </div>
+        <div class="card stagger" style="--i:4">
+          <div class="card-head"><h3 id="bars-title">By hour</h3>
+            <div class="seg tiny hidden" id="year-split"><div class="seg-pill"></div><button data-s="month" class="active">Months</button><button data-s="week">Weeks</button></div>
+          </div>
+          <div class="bars" id="bars"><div class="bars-grid" id="bars-grid"></div><div class="bars-cols" id="bars-cols"></div></div>
+          <p class="muted tiny-note" id="bars-note">Click a bar to zoom in.</p>
+        </div>
+      </div>
+      <div class="card stagger" style="--i:5">
+        <div class="card-head"><h3>Subject breakdown</h3></div>
+        <div class="hbars" id="hbars"></div>
+      </div>
+    </section>
+
+    <!-- GARDEN -->
+    <section class="page" id="page-garden">
+      <header class="page-head stagger" style="--i:0">
+        <div><h1>Your garden</h1><p class="sub">Every session over 10 minutes plants a tree here.</p></div>
+        <div class="head-stats">
+          <div class="mini-stat"><span class="ms-label">Trees</span><span class="ms-val" id="g-trees">0</span></div>
+          <div class="mini-stat"><span class="ms-label">Total coins</span><span class="ms-val" id="g-coins">0</span></div>
+          <div class="mini-stat"><span class="ms-label">Withered</span><span class="ms-val" id="g-dead">0</span></div>
+        </div>
+      </header>
+      <div class="card garden-scene stagger" style="--i:1" id="garden-scene">
+        <div class="sky"><div class="night-sky"></div><div class="stars"></div><div class="sun"></div><div class="moon"></div><div class="cloud c1"></div><div class="cloud c2"></div><div class="cloud c3"></div></div>
+        <div class="gs-birds" id="gs-birds"></div>
+        <div class="plot-host" id="garden-plot"></div>
+        <div class="gs-life" id="gs-life"></div>
+        <div class="gs-caption" id="gs-caption"></div>
+      </div>
+      <div class="garden-filter stagger" style="--i:2"><div class="chips small" id="garden-chips"></div></div>
+      <div id="garden"></div>
+    </section>
+
+    <!-- HISTORY -->
+    <section class="page" id="page-trees">
+      <header class="page-head stagger" style="--i:0">
+        <div><h1>Trees</h1><p class="sub">Spend your coins on cases to unlock new trees. Rarer trees earn bonus coins.</p></div>
+        <div class="head-stats">
+          <div class="mini-stat"><span class="ms-label">Collected</span><span class="ms-val" id="tr-owned">0</span></div>
+          <div class="mini-stat coins-stat"><span class="ms-label">Coins</span><span class="ms-val"><span class="coin sm"></span><span id="tr-coins">0</span></span></div>
+        </div>
+      </header>
+      <div class="cases stagger" style="--i:1" id="cases"></div>
+      <div class="card stagger" style="--i:2">
+        <div class="card-head"><h3>Collection</h3><span class="muted">Click a tree you own to use it next. Star it to keep it first in the picker</span></div>
+        <div class="collection" id="collection"></div>
+      </div>
+    </section>
+
+    <section class="page" id="page-badges">
+      <header class="page-head stagger" style="--i:0">
+        <div><h1>Achievements</h1><p class="sub">Collect badges as you study. Hover one to see how close you are.</p></div>
+        <div class="head-stats">
+          <div class="mini-stat"><span class="ms-label">Earned</span><span class="ms-val" id="bd-earned">0</span></div>
+          <div class="mini-stat"><span class="ms-label">Latest</span><span class="ms-val small" id="bd-latest">None yet</span></div>
+        </div>
+      </header>
+      <div id="badge-cats" class="badge-cats"></div>
+    </section>
+
+    <section class="page" id="page-history">
+      <header class="page-head stagger" style="--i:0">
+        <div><h1>History</h1><p class="sub">Every session you've logged.</p></div>
+        <div class="head-actions">
+          <select id="hist-filter" class="select"></select>
+          <button class="btn primary" id="btn-add-manual"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Add session</button>
+        </div>
+      </header>
+      <div class="card manual-card collapsed" id="manual-card"><div class="manual-wrap">
+        <div class="manual-grid">
+          <label>Subject<select id="m-subject" class="select"></select></label>
+          <label>Tree<select id="m-tree" class="select"></select></label>
+          <label>Date<input type="date" id="m-date" class="input"></label>
+          <label>Start<input type="time" id="m-start" class="input"></label>
+          <label>End<input type="time" id="m-end" class="input"></label>
+          <div class="manual-actions"><button class="btn primary" id="m-save">Save</button><button class="btn ghost" id="m-close">Close</button></div>
+        </div>
+        <p class="muted" id="m-msg"></p>
+      </div></div>
+      <div id="history-list"></div>
+      <div class="center"><button class="btn ghost hidden" id="hist-more">Show more</button></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="page" id="page-settings">
+      <header class="page-head stagger" style="--i:0"><div><h1>Settings</h1><p class="sub">Make it yours.</p></div></header>
+      <div class="card stagger" style="--i:1">
+        <div class="card-head"><h3>Profile</h3></div>
+        <div class="row-field"><label for="set-name">Your name</label><input id="set-name" class="input" placeholder="Optional" maxlength="30"></div>
+        <div class="row-field"><label>Open the mini player when the timer starts</label><button class="switch" id="set-automini" role="switch"><span></span></button></div>
+      </div>
+      <div class="card stagger" style="--i:2">
+        <div class="card-head"><h3>Theme</h3></div>
+        <div class="theme-grid" id="set-themes"></div>
+      </div>
+      <div class="card stagger" style="--i:3">
+        <div class="card-head"><h3>Subjects</h3></div>
+        <div class="subj-list" id="set-subjects"></div>
+        <div class="add-row"><input id="set-new-subject" class="input" placeholder="Add a subject, e.g. Physics 3&4" maxlength="40"><button class="btn primary" id="set-add-subject">Add</button></div>
+        <div id="archived-wrap" class="archived-wrap hidden">
+          <div class="card-head"><h3>Finished subjects</h3><span class="muted">Hidden from the timer, still in your stats and history</span></div>
+          <div class="subj-list" id="set-archived"></div>
+        </div>
+      </div>
+      <div class="card stagger" style="--i:4">
+        <div class="card-head"><h3>Your data</h3></div>
+        <p class="muted">Everything is saved on this PC automatically. Export a backup to move to another computer or keep a copy safe.</p>
+        <div class="btn-row">
+          <button class="btn primary" id="set-export">Export backup (.json)</button>
+          <button class="btn" id="set-export-csv">Export sessions (.csv)</button>
+          <button class="btn" id="set-import">Import data</button>
+        </div>
+        <p class="muted tiny-note" id="app-version"></p>
+        <p class="muted tiny-note">Import accepts a backup file from this app, a CSV export, or your old tracker's .html file.</p>
+        <div class="btn-row danger-row">
+          <button class="btn ghost" id="set-tutorial">Show the tutorial</button>
+          <button class="btn ghost" id="set-rerun">Redo the setup</button>
+          <button class="btn danger" id="set-clear">Delete all data</button>
+        </div>
+      </div>
+      <div class="card stagger" style="--i:5">
+        <div class="card-head"><h3>Updates</h3></div>
+        <div class="upd-row">
+          <div class="upd-info"><span class="upd-dot" id="upd-dot"></span><div><div class="upd-title" id="upd-title">Updates install by themselves</div><div class="muted upd-sub" id="upd-sub">New versions download in the background and install when you close the app. Your saves are never touched.</div></div></div>
+          <div class="btn-row upd-btns"><button class="btn" id="upd-check">Check now</button><button class="btn primary hidden" id="upd-restart">Restart to update</button></div>
+        </div>
+        <div class="upd-bar hidden" id="upd-bar"><span></span></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ONBOARDING -->
+<div id="onboarding" class="hidden">
+  <div class="ob-bg"><div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div></div>
+  <div class="ob-card">
+    <div class="ob-dots"><span class="active"></span><span></span><span></span><span></span></div>
+    <div class="ob-steps">
+      <div class="ob-step active" data-step="0">
+        <div class="ob-tree" id="ob-tree"></div>
+        <h1 class="ob-title">Welcome to your study space</h1>
+        <p class="sub">Track your study time, watch a tree grow while you focus, and build a garden as you go.</p>
+        <input id="ob-name" class="input big" placeholder="What should we call you? (optional)" maxlength="30">
+        <div class="ob-actions"><button class="btn primary big" data-next>Get started</button></div>
+        <button class="btn link" id="ob-import">Coming back? Import your data or your old tracker</button>
+        <p class="muted" id="ob-import-msg"></p>
+      </div>
+      <div class="ob-step" data-step="1">
+        <h1 class="ob-title">What are you studying?</h1>
+        <p class="sub">Pick the subjects you want to track. You can change these later.</p>
+        <div class="chips ob-chips" id="ob-chips"></div>
+        <div class="add-row"><input id="ob-custom" class="input" placeholder="Add your own, e.g. Methods 3&4" maxlength="40"><button class="btn" id="ob-add">Add</button></div>
+        <div class="ob-actions"><button class="btn ghost" data-back>Back</button><button class="btn primary big" data-next id="ob-subj-next">Continue</button></div>
+      </div>
+      <div class="ob-step" data-step="2">
+        <h1 class="ob-title">Choose a theme</h1>
+        <p class="sub">Click one to try it on.</p>
+        <div class="theme-grid" id="ob-themes"></div>
+        <div class="ob-actions"><button class="btn ghost" data-back>Back</button><button class="btn primary big" data-next>Continue</button></div>
+      </div>
+      <div class="ob-step" data-step="3">
+        <div class="ob-tree" id="ob-tree-final"></div>
+        <h1 class="ob-title" id="ob-done-title">You're all set</h1>
+        <p class="sub">Study for 10 minutes and your tree takes root in your garden and earns you coins. Cancel early and it withers.</p>
+        <div class="ob-actions"><button class="btn ghost" data-back>Back</button><button class="btn primary big" id="ob-finish">Start studying</button></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="case-overlay" class="hidden">
+  <div class="co-inner">
+    <h2 id="co-title">Opening</h2>
+    <div class="reel-wrap"><div class="reel-marker"></div><div class="reel" id="reel"></div></div>
+    <div class="co-result" id="co-result"></div>
+    <div class="co-actions" id="co-actions"></div>
+  </div>
+</div>
+<div id="tour" class="hidden">
+  <div class="tour-spot" id="tour-spot"></div>
+  <div class="tour-card" id="tour-card">
+    <div class="tour-step" id="tour-step"></div>
+    <h3 id="tour-title"></h3>
+    <p id="tour-text"></p>
+    <div class="tour-actions"><button class="btn link" id="tour-skip">Skip tour</button><span class="sp"></span><button class="btn ghost" id="tour-back">Back</button><button class="btn primary" id="tour-next">Next</button></div>
+  </div>
+</div>
+<div id="modal-host"></div>
+<div id="toast-host"></div>
+<div id="upd-pill" class="upd-pill hidden"><span class="upd-pill-icon"><svg viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg></span><span class="upd-pill-text"></span><button class="btn primary sm" id="upd-pill-go">Restart</button><button class="icon-btn" id="upd-pill-x" title="Later">&times;</button></div>
+<div id="tooltip"></div>
+<canvas id="fx"></canvas>
+
+<script src="tree.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
