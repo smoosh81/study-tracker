@@ -2392,6 +2392,7 @@
   async function boot() {
     APP_VERSION = await window.api.version();
     const raw = await window.api.load();
+    const prevVersion = raw && typeof raw === 'object' ? raw.appVersion : null; // the version that last saved
     const before = raw && typeof raw === 'object' ? (+raw.version || 1) : SCHEMA;
     if (raw && before < SCHEMA) await window.api.backupBeforeUpgrade(raw, before);
     D = normalise(migrate(raw));
@@ -2420,6 +2421,8 @@
       else {
         enterApp();
         if (D.active) toast('Your last session was paused when the app closed. Press Resume to continue', 4500);
+        // say so once after the app has updated itself
+        if (prevVersion && prevVersion !== APP_VERSION && !readOnly) setTimeout(() => toast(`✨ Updated to version ${esc(APP_VERSION)}`, 4200), 900);
         if (!D.profile.tutorialSeen && !D.active) setTimeout(startTour, 1100);
         if (!readOnly) {
           if (!D.badgesSeeded) {

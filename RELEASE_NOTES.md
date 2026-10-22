@@ -1,1 +1,1 @@
-Study Tracker now updates itself. New versions download in the background and install when you close the app. Your saves are never touched.
+Shows a short "Updated to version …" message the first time you open the app after it updates itself.
