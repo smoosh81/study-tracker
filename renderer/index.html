@@ -5,6 +5,7 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'">
 <title>Study Tracker</title>
 <link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="welcome.css">
 </head>
 <body data-theme="forest" class="booting">
 
@@ -261,13 +262,14 @@
         <div class="card-head"><h3>Profile</h3></div>
         <div class="row-field"><label for="set-name">Your name</label><input id="set-name" class="input" placeholder="Optional" maxlength="30"></div>
         <div class="row-field"><label>Open the mini player when the timer starts</label><button class="switch" id="set-automini" role="switch"><span></span></button></div>
+        <div class="row-field"><label>Show the welcome screen when the app opens</label><button class="switch" id="set-welcome" role="switch"><span></span></button></div>
       </div>
       <div class="card stagger" style="--i:2">
         <div class="card-head"><h3>Theme</h3></div>
         <div class="theme-grid" id="set-themes"></div>
       </div>
       <div class="card stagger" style="--i:3">
-        <div class="card-head"><h3>Subjects</h3></div>
+        <div class="card-head"><h3>Subjects</h3><span class="muted">Click a subject's colour to change it</span></div>
         <div class="subj-list" id="set-subjects"></div>
         <div class="add-row"><input id="set-new-subject" class="input" placeholder="Add a subject, e.g. Physics 3&4" maxlength="40"><button class="btn primary" id="set-add-subject">Add</button></div>
         <div id="archived-wrap" class="archived-wrap hidden">
@@ -371,6 +373,7 @@
 <canvas id="fx"></canvas>
 
 <script src="tree.js"></script>
+<script src="welcome.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -12,7 +12,7 @@
     const base = Math.floor(sec / 60) + HOUR_BONUS * Math.floor(sec / 3600);
     return Math.round(base * (1 + boostOf(species)));
   }
-  const PALETTE = ['#4ade80', '#38bdf8', '#fb923c', '#f472b6', '#a78bfa', '#facc15', '#2dd4bf', '#f87171', '#60a5fa', '#c084fc', '#34d399', '#fbbf24', '#e879f9', '#94a3b8'];
+  const PALETTE = ['#4ade80', '#38bdf8', '#fb923c', '#f472b6', '#a78bfa', '#facc15', '#2dd4bf', '#f87171', '#60a5fa', '#c084fc', '#34d399', '#fbbf24', '#e879f9', '#94a3b8', '#a3e635', '#22d3ee', '#fda4af', '#d97706'];
   const THEMES = [
     { id: 'forest', name: 'Forest', bg: '#0e1913', sf: '#16281e', ac: '#4ade80', a2: '#a3e635', tx: '#e8f1ea', dark: true },
     { id: 'ocean', name: 'Ocean', bg: '#0a1420', sf: '#112133', ac: '#38bdf8', a2: '#818cf8', tx: '#e6f0f8', dark: true },
@@ -72,7 +72,7 @@
   // ---------------- data ----------------
   // SCHEMA is the save-file format version. Bump it and add a migration below whenever
   // the save format changes, so older saves are always upgraded instead of lost.
-  const SCHEMA = 6;
+  const SCHEMA = 7;
   const MIGRATIONS = {
     // 1 -> 2 (app 1.0.1): subjects can be archived; coins are counted per 10-minute milestone
     1: (d) => {
@@ -132,6 +132,11 @@
       d.giftNotice = 'upgrade';
       return 'Added calendar, grades and achievement rewards; one free Seed Pouch for upgrading';
     },
+    // 6 -> 7 (app 1.6.0): school grades now go E, E+, D ... A, A+, so the old A-E cut-offs no longer fit
+    6: (d) => {
+      if (d.grading && d.grading.cuts) delete d.grading.cuts.school;
+      return 'School grading changed to E to A+ bands (old school cut-offs reset)';
+    },
   };
   let readOnly = false; // true if the save came from a newer version of the app
   function migrate(raw) {
@@ -154,7 +159,7 @@
     return {
       version: SCHEMA,
       migrationLog: [],
-      profile: { name: '', setupDone: false, theme: 'forest', autoMini: false, tutorialSeen: false },
+      profile: { name: '', setupDone: false, theme: 'forest', autoMini: false, tutorialSeen: false, welcome: true },
       collection: { owned: { oak: 1, pine: 1 }, opened: 0 },
       selectedTree: 'oak',
       favTrees: [],
@@ -184,7 +189,7 @@
     out.sessions = Array.isArray(x.sessions) ? x.sessions.filter((s) => s && s.subject && s.date && s.duration >= 0) : [];
     out.trees = Array.isArray(x.trees) ? x.trees : [];
     out.sessions.forEach((s) => { if (!s.id) s.id = uid(); });
-    out.subjects.forEach((s) => { s.archived = !!s.archived; });
+    out.subjects.forEach((s) => { s.archived = !!s.archived; if (!s.id) s.id = uid(); });
     out.collection = Object.assign({ owned: {}, opened: 0 }, x.collection || {});
     out.collection.owned = Object.assign({ oak: 1, pine: 1 }, out.collection.owned || {});
     if (!out.collection.owned[out.selectedTree]) out.selectedTree = 'oak';
@@ -1958,7 +1963,8 @@
 
   // ---------------- grading (Australian scales) ----------------
   const SCALES = {
-    school: { name: 'School (A to E)', grades: [['A', 85], ['B', 70], ['C', 50], ['D', 30], ['E', 0]] },
+    // the user's school: E 0-39, E+ 40-49, D 50-54, D+ 55-59, C 60-64, C+ 65-69, B 70-74, B+ 75-79, A 80-89, A+ 90+
+    school: { name: 'School (E to A+)', grades: [['A+', 90], ['A', 80], ['B+', 75], ['B', 70], ['C+', 65], ['C', 60], ['D+', 55], ['D', 50], ['E+', 40], ['E', 0]] },
     uni: { name: 'University (HD to F)', grades: [['HD', 85], ['D', 75], ['C', 65], ['P', 50], ['F', 0]] },
   };
   function scaleGrades() {
@@ -2298,32 +2304,41 @@
   }
   function renderGradeTarget(m) {
     const box = $('#gr-target');
-    const grades = scaleGrades();
     const saved = D.gradeTargets[G.subject];
-    let target = saved != null ? saved : (grades.find((x) => x.min <= 80) || grades[0]).min;
-    const opts = grades.filter((x) => x.min > 0).map((x) => `<button class="tg-chip${Math.abs(x.min - target) < 1e-6 ? ' on' : ''}" data-v="${x.min}" style="--gc:${gradeColor(x)}">${esc(x.l)}<small>${x.min}%</small></button>`).join('');
-    let verdict = '';
-    if (m.mode !== 'weighted') {
-      verdict = `<p class="muted">Add weights to your assessments to see what you need on the rest.</p>`;
-    } else if (m.remainW <= 0.001) {
-      verdict = `<div class="tg-verdict done">Everything is graded. Your final result is <b>${fmtPct(m.earned)}</b> ${gradeTag(m.earned)}</div>`;
-    } else {
-      const need = ((target - m.earned) * m.total) / m.remainW;
-      const ng = letterOf(need);
-      if (need <= 0) verdict = `<div class="tg-verdict ok">You've already locked in ${fmtPct(target)}. Even 0% on the rest keeps you there 🎉</div>`;
-      else if (need > 100) verdict = `<div class="tg-verdict no">Out of reach this time: even 100% on everything left gives you <b>${fmtPct(m.earned + m.remainW / m.total * 100)}</b>.</div>`;
-      else verdict = `<div class="tg-verdict"><span class="tg-need" style="--gc:${gradeColor(ng)}"><b id="tg-need-n">${fmtPct(need)}</b>${gradeTag(need)}</span>
-        <span>average needed on the remaining <b>${fmtPct(m.remainW)}</b> of the weight${m.upcomingW > 0 && Math.abs(m.upcomingW - m.remainW) > 0.01 ? ` (${fmtPct(m.upcomingW)} of it is listed)` : ''}</span>
-        <div class="tg-bar"><i style="--p:${Math.min(100, need).toFixed(1)}%;--gc:${gradeColor(ng)}"></i></div></div>`;
-    }
-    box.innerHTML = `<div class="card-head"><h3>What do I need?</h3><span class="muted">Pick a goal</span></div>
-      <div class="tg-chips">${opts}<span class="tg-custom"><input type="number" class="input" id="tg-custom" min="1" max="100" step="0.5" placeholder="Other" value="${grades.some((x) => Math.abs(x.min - target) < 1e-6) ? '' : target}"><b>%</b></span></div>
-      ${verdict}`;
-    $$('.tg-chip', box).forEach((b) => b.addEventListener('click', () => { D.gradeTargets[G.subject] = +b.dataset.v; save(); renderGradeTarget(m); }));
-    $('#tg-custom', box).addEventListener('change', (ev) => {
-      const v = +ev.target.value;
-      if (v > 0 && v <= 100) { D.gradeTargets[G.subject] = v; save(); renderGradeTarget(m); }
+    const target = saved != null ? saved : 80;
+    box.innerHTML = `<div class="card-head"><h3>What do I need?</h3><span class="muted">Type the final grade you want</span></div>
+      <div class="tg-input-row"><span class="tg-custom big"><input type="number" class="input" id="tg-custom" min="1" max="100" step="0.5" value="${target}"><b>%</b></span><span class="tg-letter" id="tg-letter"></span></div>
+      <div id="tg-verdict"></div>`;
+    const inp = $('#tg-custom', box);
+    const show = (v, animate) => {
+      const g = letterOf(v);
+      const tag = $('#tg-letter', box);
+      const html = v > 0 && v <= 100 && g ? `<span class="gtag big" style="--gc:${gradeColor(g)}">${esc(g.l)}</span>` : '';
+      if (tag.dataset.l !== (g && v > 0 && v <= 100 ? g.l : '')) {
+        tag.innerHTML = html;
+        tag.dataset.l = g && v > 0 && v <= 100 ? g.l : '';
+        if (animate && html) { const t = $('.gtag', tag); t.classList.add('pop-in'); }
+      }
+      inp.style.setProperty('--gc', g && v > 0 && v <= 100 ? gradeColor(g) : 'var(--border)');
+      $('#tg-verdict', box).innerHTML = v > 0 && v <= 100 ? targetVerdict(m, v) : '<p class="muted">Type a percentage between 1 and 100.</p>';
+    };
+    show(target, false);
+    inp.addEventListener('input', () => {
+      const v = +inp.value;
+      show(v, true);
+      if (v > 0 && v <= 100) { D.gradeTargets[G.subject] = v; save(); }
     });
+  }
+  function targetVerdict(m, target) {
+    if (m.mode !== 'weighted') return '<p class="muted">Add weights to your assessments to see what you need on the rest.</p>';
+    if (m.remainW <= 0.001) return `<div class="tg-verdict done">Everything is graded. Your final result is <b>${fmtPct(m.earned)}</b> ${gradeTag(m.earned)}</div>`;
+    const need = ((target - m.earned) * m.total) / m.remainW;
+    const ng = letterOf(need);
+    if (need <= 0) return `<div class="tg-verdict ok">You've already locked in ${fmtPct(target)}. Even 0% on the rest keeps you there 🎉</div>`;
+    if (need > 100) return `<div class="tg-verdict no">Out of reach this time: even 100% on everything left gives you <b>${fmtPct(m.earned + m.remainW / m.total * 100)}</b> ${gradeTag(m.earned + m.remainW / m.total * 100)}.</div>`;
+    return `<div class="tg-verdict"><span class="tg-need" style="--gc:${gradeColor(ng)}"><b>${fmtPct(need)}</b>${gradeTag(need)}</span>
+      <span>average needed on the remaining <b>${fmtPct(m.remainW)}</b> of the weight${m.upcomingW > 0 && Math.abs(m.upcomingW - m.remainW) > 0.01 ? ` (${fmtPct(m.upcomingW)} of it is listed)` : ''}</span>
+      <div class="tg-bar"><i style="--p:${Math.min(100, need).toFixed(1)}%;--gc:${gradeColor(ng)}"></i></div></div>`;
   }
 
   // settings card: grading scale and its cut-offs
@@ -2471,6 +2486,7 @@
   function renderSettings() {
     $('#set-name').value = D.profile.name || '';
     $('#set-automini').classList.toggle('on', !!D.profile.autoMini);
+    $('#set-welcome').classList.toggle('on', D.profile.welcome !== false);
     renderThemeGrid($('#set-themes'));
     renderSubjectSettings();
     renderGradingSettings();
@@ -2481,7 +2497,7 @@
     const counts = {};
     D.sessions.forEach((s) => { counts[s.subject] = (counts[s.subject] || 0) + s.duration; });
     const row = (s, i) => `<div class="subj-row" style="--c:${s.color};--i:${i}" data-id="${s.id}">
-      <button class="swatch" title="Change colour"></button>
+      <button class="swatch" title="Change colour"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg></button>
       <input class="input" value="${esc(s.name)}" maxlength="40">
       <span class="cnt">${fmtDur(counts[s.name] || 0)}</span>
       <span class="row-btns">${s.archived
@@ -2501,14 +2517,21 @@
         if (open) return;
         const pop = document.createElement('div');
         pop.className = 'palette-pop';
-        pop.innerHTML = PALETTE.map((c) => `<button style="--c:${c}" data-c="${c}"></button>`).join('');
+        pop.innerHTML = PALETTE.map((c, i) => `<button style="--c:${c};--i:${i}" data-c="${c}"${c === s.color ? ' class="on"' : ''}></button>`).join('')
+          + `<label class="pal-custom" title="Pick any colour" style="--i:${PALETTE.length}"><input type="color" value="${s.color}"><span>Any colour</span></label>`;
         row.appendChild(pop);
-        $$('button', pop).forEach((b) => b.addEventListener('click', () => {
-          s.color = b.dataset.c; save();
+        const setColor = (c, close) => {
+          s.color = c; save();
           row.style.setProperty('--c', s.color);
-          pop.remove();
+          $$('button', pop).forEach((x) => x.classList.toggle('on', x.dataset.c === c));
+          const sw = $('.swatch', row); sw.classList.remove('bump'); void sw.offsetWidth; sw.classList.add('bump');
+          if (close) pop.remove();
           renderSubjectChips();
-        }));
+        };
+        $$('button', pop).forEach((b) => b.addEventListener('click', () => setColor(b.dataset.c, true)));
+        const ci = $('input[type=color]', pop);
+        ci.addEventListener('input', () => setColor(ci.value, false));
+        ci.addEventListener('change', () => { setColor(ci.value, true); toast(`${esc(s.name)} has a new colour`); });
       });
       const inp = $('.input', row);
       inp.addEventListener('change', () => {
@@ -2864,6 +2887,7 @@
     // settings
     $('#set-name').addEventListener('change', () => { D.profile.name = $('#set-name').value.trim(); save(); });
     $('#set-automini').addEventListener('click', () => { D.profile.autoMini = !D.profile.autoMini; $('#set-automini').classList.toggle('on', D.profile.autoMini); save(); });
+    $('#set-welcome').addEventListener('click', () => { D.profile.welcome = D.profile.welcome === false; $('#set-welcome').classList.toggle('on', D.profile.welcome); save(); });
     const addS = () => { if (addSubjectFromInput($('#set-new-subject'))) { renderSubjectSettings(); renderSubjectChips(); } };
     $('#set-add-subject').addEventListener('click', addS);
     $('#set-new-subject').addEventListener('keydown', (e) => { if (e.key === 'Enter') addS(); });
@@ -2982,7 +3006,48 @@
   }
 
   // ---------------- boot ----------------
+  // What the welcome screen needs from the app (see welcome.js)
+  function welcomeCtx(ready, onLeave) {
+    const tk = todayKey();
+    return {
+      ready, D, staticTree, paintTrees, fmtDur, animateNumber, butterflies, onLeave,
+      todayTotal: () => todaySessions().reduce((a, s) => a + s.duration, 0) + (D.active ? elapsedSec() : 0),
+      streak: streakDays,
+      nextEvent: () => {
+        const e = D.events.filter((x) => x.date >= tk && evPct(x) == null).sort((a, b) => evDate(a) - evDate(b))[0];
+        return e ? { label: evLabel(e), subject: e.subject, type: EV_TYPES[e.type], when: whenText(e), days: daysUntil(e.date), color: colorOf(e.subject) } : null;
+      },
+      weekTotals: () => {
+        const out = [];
+        for (let i = 6; i >= 0; i--) {
+          const d = addDays(new Date(), -i), k = dayKey(d);
+          const sec = D.sessions.filter((s) => counted(s) && dayKey(new Date(s.date)) === k).reduce((a, s) => a + s.duration, 0) + (i === 0 && D.active ? elapsedSec() : 0);
+          out.push({ label: d.toLocaleDateString([], { weekday: 'narrow' }), sec, today: i === 0 });
+        }
+        return out;
+      },
+      unclaimed: () => (readOnly ? 0 : unclaimed().length),
+      freeCases: () => (readOnly ? 0 : totalFree()),
+      treeBurst: (id, r) => {
+        const sp = window.Tree.get(id), o = (GROW_FX[window.Tree.growOf(id).fx] || GROW_FX.leaves)(sp);
+        burst(r.left + r.width / 2, r.top + r.height * 0.4, Object.assign({ n: 34, spread: r.width * 0.5, spreadY: r.height * 0.3 }, o));
+      },
+      paused: D.active ? { subject: D.active.subject, sec: elapsedSec() } : null,
+    };
+  }
+  // open the app on a given page without the usual page-change animation
+  function setStartPage(page) {
+    if (!page || page === currentPage || !$(`#page-${page}`)) return;
+    $(`#page-${currentPage}`).classList.remove('active');
+    currentPage = page;
+    $(`#page-${page}`).classList.add('active');
+    $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
+  }
   async function boot() {
+    // the startup animation plays while the save loads
+    let ready;
+    const readyP = new Promise((r) => { ready = r; });
+    const introP = window.Welcome ? window.Welcome.intro({ ready: readyP }).catch(() => {}) : Promise.resolve();
     APP_VERSION = await window.api.version();
     const raw = await window.api.load();
     const prevVersion = raw && typeof raw === 'object' ? raw.appVersion : null; // the version that last saved
@@ -3008,29 +3073,51 @@
       window.Tree.setGrowth(treeSvg, g.p, g.g);
     }
     loop();
-    setTimeout(() => {
-      document.body.classList.remove('booting');
-      if (!D.profile.setupDone) showOnboarding();
-      else {
-        enterApp();
-        if (D.active) toast('Your last session was paused when the app closed. Press Resume to continue', 4500);
-        if (!readOnly) showGiftNotice();
-        // say so once after the app has updated itself
-        if (prevVersion && prevVersion !== APP_VERSION && !readOnly) setTimeout(() => toast(`✨ Updated to version ${esc(APP_VERSION)}`, 4200), 900);
-        if (!D.profile.tutorialSeen && !D.active) setTimeout(startTour, 1100);
-        if (!readOnly) {
-          if (!D.badgesSeeded) {
-            const n = checkAchievements(true).length;
-            D.badgesSeeded = true; save();
-            if (n) setTimeout(() => toast(`New: Achievements! You've already earned ${n} badge${n === 1 ? '' : 's'}`, 4200), 1600);
-          } else setTimeout(() => checkAchievements(), 1500);
-        }
-        if (readOnly) modal({ title: 'This save is from a newer version', body: 'Your save data was made by a newer version of Study Tracker. This older version will show it but won\'t change it, so nothing gets lost. Download the latest version to keep tracking.' });
+    ready();
+    // everything that used to pop up on open now waits until the welcome screen is gone
+    const afterOpen = (resumed) => {
+      if (D.active && !resumed) toast('Your last session was paused when the app closed. Press Resume to continue', 4500);
+      if (!readOnly) showGiftNotice();
+      // say so once after the app has updated itself
+      if (prevVersion && prevVersion !== APP_VERSION && !readOnly) setTimeout(() => toast(`✨ Updated to version ${esc(APP_VERSION)}`, 4200), 900);
+      if (!D.profile.tutorialSeen && !D.active) setTimeout(startTour, 1100);
+      if (!readOnly) {
+        if (!D.badgesSeeded) {
+          const n = checkAchievements(true).length;
+          D.badgesSeeded = true; save();
+          if (n) setTimeout(() => toast(`New: Achievements! You've already earned ${n} badge${n === 1 ? '' : 's'}`, 4200), 1600);
+        } else setTimeout(() => checkAchievements(), 1500);
       }
-    }, 80);
+      if (readOnly) modal({ title: 'This save is from a newer version', body: 'Your save data was made by a newer version of Study Tracker. This older version will show it but won\'t change it, so nothing gets lost. Download the latest version to keep tracking.' });
+    };
+    await introP;
+    if (!D.profile.setupDone) {
+      document.body.classList.remove('booting');
+      showOnboarding();
+    } else if (D.profile.welcome !== false && window.Welcome) {
+      window.Welcome.show(welcomeCtx(readyP, (page) => {
+        const isResume = page === 'resume';
+        setStartPage(isResume ? 'timer' : page || 'timer');
+        document.body.classList.remove('booting');
+        enterApp();
+        if (isResume && T.state === 'paused') setTimeout(() => resume(), 650);
+        setTimeout(() => {
+          afterOpen(isResume);
+        }, 700);
+      }));
+    } else {
+      document.body.classList.remove('booting');
+      enterApp();
+      afterOpen();
+    }
     // refresh "today" and the greeting when the date rolls over
     setInterval(() => { updateDayPhase(); if (currentPage === 'timer') { renderToday(); } }, 60000);
   }
-  window.__dbg = { get D() { return D; }, T, S };
+  window.__dbg = {
+    get D() { return D; }, T, S,
+    // replays the startup animation and welcome screen (handy for testing)
+    replayWelcome: () => window.Welcome.intro({ ready: Promise.resolve() })
+      .then(() => window.Welcome.show(welcomeCtx(Promise.resolve(), (p) => go(p === 'resume' ? 'timer' : p || currentPage)))),
+  };
   boot();
 })();

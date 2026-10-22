@@ -1151,3 +1151,23 @@ body.is-night .bfly { display: none; }
 .cuts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .cut { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 6px; border-radius: 12px; background: var(--surface2); animation: pop .45s var(--spring) both; animation-delay: calc(var(--i) * 40ms); }
 .cut .suffix-in.sm .input { width: 72px; }
+
+/* 1.6.0: target is just a percentage box with its letter grade beside it */
+.tg-input-row { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.tg-custom.big .input { width: 130px; font-size: 22px; font-weight: 800; padding: 10px 34px 10px 14px; border-color: color-mix(in srgb, var(--gc, var(--border)) 70%, transparent); transition: border-color .35s, box-shadow .35s; }
+.tg-custom.big .input:focus { box-shadow: 0 0 0 4px color-mix(in srgb, var(--gc, var(--accent)) 22%, transparent); }
+.tg-custom.big b { font-size: 16px; right: 13px; }
+.gtag.big { min-width: 50px; height: 40px; font-size: 20px; border-radius: 12px; padding: 0 10px; }
+.gtag.pop-in { animation: pop .45s var(--spring); }
+
+/* 1.6.0: subject colours are easier to find and change */
+.subj-row .swatch { display: grid; place-items: center; box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 25%, transparent); }
+.subj-row .swatch svg { width: 13px; height: 13px; fill: none; stroke: rgba(0,0,0,.55); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; opacity: 0; transform: scale(.5); transition: opacity .25s, transform .3s var(--spring); }
+.subj-row .swatch:hover svg, .subj-row:hover .swatch svg { opacity: 1; transform: none; }
+.swatch.bump { animation: navBump .5s var(--spring); }
+.palette-pop button { animation: pop .35s var(--spring) both; animation-delay: calc(var(--i, 0) * 18ms); }
+.palette-pop button.on { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--c); }
+.pal-custom { display: inline-flex; align-items: center; gap: 6px; padding: 0 8px 0 2px; height: 24px; border-radius: 8px; background: var(--surface2); font-size: 12px; font-weight: 650; color: var(--muted); cursor: pointer; animation: pop .35s var(--spring) both; animation-delay: calc(var(--i, 0) * 18ms); }
+.pal-custom input { width: 22px; height: 22px; border: none; padding: 0; background: none; cursor: pointer; border-radius: 6px; }
+.pal-custom input::-webkit-color-swatch-wrapper { padding: 0; }
+.pal-custom input::-webkit-color-swatch { border: none; border-radius: 6px; background: conic-gradient(red, yellow, lime, cyan, blue, magenta, red) !important; }
