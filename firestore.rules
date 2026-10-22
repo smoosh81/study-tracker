@@ -1,0 +1,85 @@
+rules_version = '2';
+// Security rules for Study Tracker friends. Paste these into
+// Firebase console > Firestore Database > Rules, then press Publish.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function me() { return request.auth.uid; }
+    function isCode(c) { return c is string && c.matches('^[A-Z]{4}$'); }
+    function okName(n) { return n is string && n.size() <= 40; }
+    function profile(uid) { return get(/databases/$(database)/documents/profiles/$(uid)); }
+    // true when `uid` has me on their friends list
+    function listedBy(uid) { return exists(/databases/$(database)/documents/profiles/$(uid)) && me() in profile(uid).data.friends; }
+
+    // 4-letter friend codes. Anyone signed in can look one up (it only gives a name).
+    match /codes/{code} {
+      allow get: if signedIn();
+      allow create: if signedIn() && isCode(code)
+        && request.resource.data.keys().hasOnly(['uid', 'name'])
+        && request.resource.data.uid == me() && okName(request.resource.data.name)
+        && getAfter(/databases/$(database)/documents/profiles/$(me())).data.code == code;
+      allow update: if signedIn() && resource.data.uid == me()
+        && request.resource.data.keys().hasOnly(['uid', 'name'])
+        && request.resource.data.uid == me() && okName(request.resource.data.name);
+    }
+
+    // Profiles: only the owner writes; only people the owner has added can read.
+    match /profiles/{uid} {
+      allow get: if signedIn() && (uid == me() || me() in resource.data.friends);
+      allow create, update: if signedIn() && uid == me() && validProfile() && codeOk();
+      allow delete: if signedIn() && uid == me();
+    }
+    function validProfile() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['name', 'code', 'friends', 'data', 'grades', 'updated'])
+        && okName(d.name) && d.friends is list && d.friends.size() <= 200
+        && (!('data' in d) || (d.data is string && d.data.size() < 400000))
+        && (!('grades' in d) || (d.grades is string && d.grades.size() < 60000));
+    }
+    // a code can be set once, and only to a code this account owns
+    function codeOk() {
+      let d = request.resource.data;
+      return !('code' in d)
+        || (resource != null && 'code' in resource.data && resource.data.code == d.code)
+        || ((resource == null || !('code' in resource.data)) && isCode(d.code)
+            && getAfter(/databases/$(database)/documents/codes/$(d.code)).data.uid == me());
+    }
+
+    // Friend requests and gifts. Only the owner reads and removes them.
+    match /inbox/{to}/items/{id} {
+      allow get, list, delete: if signedIn() && to == me();
+      allow create: if signedIn() && to != me() && validItem(to, id);
+    }
+    function validItem(to, id) {
+      let d = request.resource.data;
+      return d.from == me() && okName(d.name) && d.at is string
+        && ((d.type == 'request' && id == 'req_' + me()
+              && d.keys().hasOnly(['type', 'from', 'name', 'code', 'at']))
+          || (d.type == 'gift' && listedBy(to) && id.matches('^gift_[a-z0-9]+$')
+              && d.keys().hasOnly(['type', 'from', 'name', 'kind', 'amount', 'box', 'at'])
+              && ((d.kind == 'coins' && d.amount is int && d.amount >= 1 && d.amount <= 500)
+                || (d.kind == 'case' && d.box in ['seed', 'sapling', 'grove']))));
+    }
+
+    // Friend streaks: one doc per pair, id is the two account ids sorted and joined by "_".
+    match /streaks/{pair} {
+      allow get: if signedIn() && (resource == null || me() in resource.data.members);
+      allow create: if signedIn() && validStreak()
+        && request.resource.data.by == me() && request.resource.data.status == 'pending'
+        && pair == request.resource.data.members[0] + '_' + request.resource.data.members[1]
+        && listedBy(request.resource.data.members[0] == me() ? request.resource.data.members[1] : request.resource.data.members[0]);
+      allow update: if signedIn() && me() in resource.data.members && validStreak()
+        && request.resource.data.members == resource.data.members
+        && request.resource.data.by == resource.data.by
+        // only the invited friend can accept
+        && (request.resource.data.status == resource.data.status || me() != resource.data.by);
+      allow delete: if signedIn() && me() in resource.data.members;
+    }
+    function validStreak() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['members', 'by', 'status', 'since', 'updated'])
+        && d.members is list && d.members.size() == 2 && me() in d.members && d.members[0] < d.members[1]
+        && d.status in ['pending', 'active'] && d.since is string && d.since.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+  }
+}
