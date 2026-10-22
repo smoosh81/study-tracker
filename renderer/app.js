@@ -2335,7 +2335,7 @@
     const check = $('#upd-check'), go = $('#upd-restart');
     if (!dot) return;
     const busy = ['checking', 'downloading', 'unpacking'].includes(s.status);
-    dot.className = 'upd-dot ' + ({ current: 'ok', ready: 'ready', error: 'err' }[s.status] || (busy ? 'busy' : ''));
+    dot.className = 'upd-dot ' + ({ current: 'ok', ready: 'ready', error: 'err', failed: 'err' }[s.status] || (busy ? 'busy' : ''));
     const texts = {
       idle: ['Updates install by themselves', 'New versions download in the background and install when you close the app. Your saves are never touched.'],
       checking: ['Checking for updates…', 'Looking for a newer version.'],
@@ -2345,10 +2345,11 @@
       ready: [`Version ${esc(s.version)} is ready`, 'It installs when you close the app, or press Restart to update now. Your saves are never touched.'],
       error: ["Couldn't check for updates", `${esc(s.error || 'No internet?')} It'll try again later.`],
       unsupported: ['Automatic updates are off here', 'They only work in the installed Study Tracker folder on Windows.'],
+      failed: ["This update couldn't install by itself", `Download version ${esc(s.version)} from <a href="${esc(s.url || 'https://github.com/smoosh81/study-tracker/releases/latest')}" target="_blank">the releases page</a> and replace your Study Tracker folder. Your saves are kept.`],
     }[s.status] || ['Updates', ''];
     title.innerHTML = texts[0];
     sub.innerHTML = texts[1];
-    check.classList.toggle('hidden', s.status === 'ready' || s.status === 'unsupported');
+    check.classList.toggle('hidden', ['ready', 'unsupported', 'failed'].includes(s.status));
     check.disabled = busy;
     go.classList.toggle('hidden', s.status !== 'ready');
     bar.classList.toggle('hidden', !busy);

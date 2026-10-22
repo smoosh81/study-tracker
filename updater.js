@@ -6,9 +6,9 @@
 //     %LOCALAPPDATA%\Study Tracker Updates (never the saves folder) and checks its SHA-256.
 //     If the Electron version is unchanged only the small app.asar is downloaded,
 //     otherwise the full portable zip is downloaded and unpacked.
-//  3. When the app closes (or the user presses "Restart now") a small hidden PowerShell
-//     script waits for the app to exit, copies the new files over the app folder
-//     (keeping a backup to roll back to if anything fails) and, if asked, starts the app again.
+//  3. When the app closes (or the user presses "Restart now") update-helper.js runs on the
+//     app's own exe in Node mode, waits for the app to exit, copies the new files over the app
+//     folder (keeping a backup to roll back to if anything fails) and, if asked, starts the app again.
 //
 // Saves in %APPDATA%\Study Tracker are never read or written here.
 const { app, net } = require('electron');
@@ -150,7 +150,7 @@ async function check(manual = false) {
       setState({ status: 'downloading', version: m.version, progress: 0, notes: m.notes || '' });
       let p;
       if (m.asar && m.electron && m.electron === process.versions.electron) {
-        const dest = path.join(dir, 'app.asar');
+        const dest = path.join(dir, 'app.asar.new');
         await download(base + m.asar.name, dest, m.asar.size, m.asar.sha256);
         p = { version: m.version, kind: 'asar', source: dest };
       } else {
@@ -179,97 +179,32 @@ async function check(manual = false) {
   return checking;
 }
 
-function psQuote(s) { return `'${String(s).replace(/'/g, "''")}'`; }
-
-// Writes and starts the hidden helper that swaps the files once this app has exited.
+// Starts the helper (update-helper.js) that swaps the files once this app has exited.
+// It runs on the app's own exe in Node mode, so it doesn't depend on PowerShell or scripts
+// being allowed. For a full update it runs from the NEW exe, since the old one gets replaced.
 function startHelper(relaunch) {
   if (!pending) return false;
-  const exe = process.execPath;
-  const script = path.join(UPDATES_DIR(), 'apply-update.ps1');
-  const ps = `
-$ErrorActionPreference = 'Stop'
-$appPid   = ${process.pid}
-$appDir   = ${psQuote(APP_DIR())}
-$exe      = ${psQuote(exe)}
-$kind     = ${psQuote(pending.kind)}
-$source   = ${psQuote(pending.source)}
-$version  = ${psQuote(pending.version)}
-$updates  = ${psQuote(UPDATES_DIR())}
-$relaunch = ${relaunch ? '$true' : '$false'}
-$logFile  = Join-Path $updates 'update-log.txt'
-function Log($m) { Add-Content -LiteralPath $logFile -Value ((Get-Date).ToString('o') + ' [helper] ' + $m) }
-
-# wait for the app (and its helper processes) to let go of the files
-try { Wait-Process -Id $appPid -Timeout 60 -ErrorAction SilentlyContinue } catch {}
-$exeName = [IO.Path]::GetFileNameWithoutExtension($exe)
-for ($i = 0; $i -lt 40; $i++) {
-  $left = Get-Process -Name $exeName -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe }
-  if (-not $left) { break }
-  Start-Sleep -Milliseconds 250
-}
-
-function Retry($block) {
-  for ($i = 0; $i -lt 30; $i++) { try { & $block; return } catch { if ($i -eq 29) { throw }; Start-Sleep -Milliseconds 500 } }
-}
-
-$backup = Join-Path $updates 'previous-version'
-# list of files to install: @{ src = new file; rel = path inside the app folder }
-if ($kind -eq 'asar') {
-  $files = @(@{ src = $source; rel = 'resources\\app.asar' })
-} else {
-  $root = (Resolve-Path -LiteralPath $source).ProviderPath.TrimEnd('\\')
-  $files = @(Get-ChildItem -LiteralPath $root -Recurse -File | ForEach-Object { @{ src = $_.FullName; rel = $_.FullName.Substring($root.Length).TrimStart('\\') } })
-}
-$ok = $false
-$done = @()
-try {
-  if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
-  New-Item -ItemType Directory -Path $backup -Force | Out-Null
-  foreach ($f in $files) {
-    $dest = Join-Path $appDir $f.rel
-    $destDir = Split-Path -Parent $dest
-    if (-not (Test-Path -LiteralPath $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
-    $had = Test-Path -LiteralPath $dest
-    if ($had) {
-      # keep the old file so a failed update can be undone
-      $bk = Join-Path $backup $f.rel
-      $bkDir = Split-Path -Parent $bk
-      if (-not (Test-Path -LiteralPath $bkDir)) { New-Item -ItemType Directory -Path $bkDir -Force | Out-Null }
-      Retry { Copy-Item -LiteralPath $dest -Destination $bk -Force }
-    }
-    $done += ,@{ rel = $f.rel; had = $had }
-    $src = $f.src
-    Retry { Copy-Item -LiteralPath $src -Destination $dest -Force }
-  }
-  $ok = $true
-  Log "installed $kind update $version ($($files.Count) files)"
-} catch {
-  Log ("install failed, putting the old version back: " + $_.Exception.Message)
-  foreach ($d in $done) {
-    try {
-      $dest = Join-Path $appDir $d.rel
-      if ($d.had) { Copy-Item -LiteralPath (Join-Path $backup $d.rel) -Destination $dest -Force }
-      else { Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue }
-    } catch { Log ("could not restore " + $d.rel + ": " + $_.Exception.Message) }
-  }
-  Log 'rollback finished'
-}
-
-if ($ok) {
-  Remove-Item -LiteralPath (Join-Path $updates 'pending.json') -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath (Join-Path $updates $version) -Recurse -Force -ErrorAction SilentlyContinue
-}
-if ($relaunch) { Start-Process -FilePath $exe -WorkingDirectory $appDir }
-`;
   try {
-    fs.mkdirSync(UPDATES_DIR(), { recursive: true });
-    fs.writeFileSync(script, '\ufeff' + ps.replace(/\r?\n/g, '\r\n'), 'utf8');
-    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script], {
-      detached: true, stdio: 'ignore', windowsHide: true, cwd: UPDATES_DIR(),
+    pending.attempts = (pending.attempts || 0) + 1;
+    fs.writeFileSync(PENDING_FILE(), JSON.stringify(pending));
+    const dir = UPDATES_DIR();
+    const helper = path.join(dir, 'update-helper.js');
+    fs.writeFileSync(helper, fs.readFileSync(path.join(__dirname, 'update-helper.js'), 'utf8'));
+    const job = path.join(dir, 'update-job.json');
+    fs.writeFileSync(job, JSON.stringify({
+      pid: process.pid, appDir: APP_DIR(), exe: process.execPath, kind: pending.kind,
+      source: pending.source, version: pending.version, updatesDir: dir, relaunch: !!relaunch,
+    }));
+    const runner = pending.kind === 'full' ? path.join(pending.source, path.basename(process.execPath)) : process.execPath;
+    const child = spawn(runner, [helper, job], {
+      detached: true, stdio: 'ignore', windowsHide: true, cwd: dir,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     });
+    child.on('error', (err) => log(`helper could not start: ${err && err.message}`));
+    child.on('exit', (code) => log(`helper exited early with code ${code}`));
     child.unref();
-    log(`helper started for ${pending.version} (relaunch: ${relaunch})`);
-    return true;
+    log(`helper started for ${pending.version} (attempt ${pending.attempts}, relaunch: ${!!relaunch}, pid ${child.pid})`);
+    return !!child.pid;
   } catch (err) {
     log(`could not start helper: ${err && err.message}`);
     return false;
@@ -290,6 +225,11 @@ function init(opts) {
       }
       fs.rmSync(PENDING_FILE(), { force: true });
     } catch (e) {}
+  } else if ((pending.attempts || 0) >= 3) {
+    log(`giving up on ${pending.version} after ${pending.attempts} tries`);
+    setState({ status: 'failed', version: pending.version, url: `https://github.com/${repo}/releases/latest` });
+    pending = null; // stop trying on every close; the user can download it instead
+    return;
   } else {
     setState({ status: 'ready', version: pending.version });
   }

@@ -1,1 +1,1 @@
-Shows a short "Updated to version …" message the first time you open the app after it updates itself.
+Fixes automatic updates not installing on some PCs. The installer now runs on the app's own engine instead of PowerShell.
