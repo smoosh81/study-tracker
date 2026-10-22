@@ -72,7 +72,7 @@
   // ---------------- data ----------------
   // SCHEMA is the save-file format version. Bump it and add a migration below whenever
   // the save format changes, so older saves are always upgraded instead of lost.
-  const SCHEMA = 5;
+  const SCHEMA = 6;
   const MIGRATIONS = {
     // 1 -> 2 (app 1.0.1): subjects can be archived; coins are counted per 10-minute milestone
     1: (d) => {
@@ -119,6 +119,19 @@
       if (d.active) d.active.hours = Math.floor(((d.active.acc || 0) / 1000) / 3600);
       return 'Added achievements; coins now paid per minute; withered count taken from history';
     },
+    // 5 -> 6 (app 1.5.0): calendar, grade calculator, achievement rewards, free cases.
+    // Everyone upgrading gets one free Seed Pouch (once, here). Badges already earned can claim their reward.
+    5: (d) => {
+      if (!Array.isArray(d.events)) d.events = [];
+      if (!d.gradeExtras || typeof d.gradeExtras !== 'object') d.gradeExtras = {};
+      if (!d.gradeTargets || typeof d.gradeTargets !== 'object') d.gradeTargets = {};
+      if (!d.grading || typeof d.grading !== 'object') d.grading = { scale: 'school', cuts: {} };
+      if (!d.badgeClaims || typeof d.badgeClaims !== 'object') d.badgeClaims = {};
+      d.freeCases = d.freeCases && typeof d.freeCases === 'object' ? d.freeCases : {};
+      d.freeCases.seed = (+d.freeCases.seed || 0) + 1;
+      d.giftNotice = 'upgrade';
+      return 'Added calendar, grades and achievement rewards; one free Seed Pouch for upgrading';
+    },
   };
   let readOnly = false; // true if the save came from a newer version of the app
   function migrate(raw) {
@@ -147,6 +160,13 @@
       favTrees: [],
       achievements: {},
       badgesSeeded: true,
+      badgeClaims: {},
+      freeCases: { seed: 1 }, // every new user starts with one free Seed Pouch
+      giftNotice: 'welcome',
+      events: [],
+      gradeExtras: {},
+      gradeTargets: {},
+      grading: { scale: 'school', cuts: {} },
       subjects: [],
       sessions: [],
       trees: [],
@@ -173,6 +193,15 @@
     out.favTrees = Array.isArray(x.favTrees) ? x.favTrees.filter((id) => typeof id === 'string') : [];
     out.coins = +x.coins || 0;
     out.withered = +x.withered || 0;
+    const obj = (v) => v && typeof v === 'object' && !Array.isArray(v);
+    out.badgeClaims = obj(x.badgeClaims) ? x.badgeClaims : {};
+    out.freeCases = obj(x.freeCases) ? x.freeCases : {};
+    out.events = Array.isArray(x.events) ? x.events.filter((e) => e && e.id && e.subject && /^\d{4}-\d{2}-\d{2}$/.test(e.date) && EV_TYPES[e.type]) : [];
+    out.gradeExtras = obj(x.gradeExtras) ? x.gradeExtras : {};
+    out.gradeTargets = obj(x.gradeTargets) ? x.gradeTargets : {};
+    out.grading = Object.assign({ scale: 'school', cuts: {} }, obj(x.grading) ? x.grading : {});
+    if (!SCALES[out.grading.scale]) out.grading.scale = 'school';
+    if (x.giftNotice) out.giftNotice = x.giftNotice; else delete out.giftNotice;
     return out;
   }
   let saveTimer = null;
@@ -376,6 +405,7 @@
   const HEAVY = {
     timer: ['#week-plot'], stats: ['#stats-plot'], garden: ['#garden', '#garden-plot'],
     trees: ['#collection', '#cases'], badges: ['#badge-cats'], history: ['#history-list'],
+    calendar: ['#cal-grid', '#cal-side'], grades: ['#gr-body', '#gr-chips'],
   };
   function freePage(p) {
     if (p === currentPage) return;
@@ -389,6 +419,8 @@
     if (p === 'history') renderHistory();
     if (p === 'badges') renderBadges();
     if (p === 'settings') renderSettings();
+    if (p === 'calendar') renderCalendar();
+    if (p === 'grades') renderGrades();
   }
 
   // ---------------- toasts, modals, tooltip, fx ----------------
@@ -1500,11 +1532,14 @@
       <div class="case-box"><div class="cb-lid"></div><div class="cb-body"></div><div class="cb-band"></div><div class="cb-shine"></div></div></div>
       <h3>${c.name}</h3>
       <div class="odds">${window.Tree.RARITY_ORDER.filter((r) => c.odds[r]).map((r) => `<span style="--rc:${window.Tree.RARITIES[r].color}"><i></i>${window.Tree.RARITIES[r].name}<b>${c.odds[r]}%</b></span>`).join('')}</div>
-      <button class="btn primary open-case"${D.coins < c.price ? ' disabled' : ''}><span class="coin sm"></span>${c.price}</button>
-      ${D.coins < c.price ? `<span class="need">Need ${c.price - D.coins} more coins</span>` : '<span class="need">&nbsp;</span>'}
+      ${freeCount(c.id) ? `<button class="btn primary open-case free" data-free="1">🎁 Open free${freeCount(c.id) > 1 ? ` (${freeCount(c.id)})` : ''}</button>
+        <span class="need">or <span class="coin sm"></span>${c.price} coins</span>`
+        : `<button class="btn primary open-case"${D.coins < c.price ? ' disabled' : ''}><span class="coin sm"></span>${c.price}</button>
+      ${D.coins < c.price ? `<span class="need">Need ${c.price - D.coins} more coins</span>` : '<span class="need">&nbsp;</span>'}`}
+      ${freeCount(c.id) ? `<span class="free-ribbon">${freeCount(c.id)} free</span>` : ''}
     </div>`).join('');
     $$('.case-card').forEach((card) => {
-      $('.open-case', card).addEventListener('click', () => openCase(CASES.find((c) => c.id === card.dataset.c)));
+      $('.open-case', card).addEventListener('click', (ev) => openCase(CASES.find((c) => c.id === card.dataset.c), !!ev.currentTarget.dataset.free));
       // tilt towards the mouse and kick off a little burst of sparkles on the way in
       card.addEventListener('mouseenter', () => {
         const r = $('.case-box', card).getBoundingClientRect();
@@ -1547,10 +1582,16 @@
     }));
   }
   const REEL_W = 132;
-  function openCase(c) {
-    if (D.coins < c.price) return;
-    D.coins -= c.price;
-    renderCoins();
+  function openCase(c, free) {
+    if (free) {
+      if (!freeCount(c.id)) return;
+      D.freeCases[c.id] = freeCount(c.id) - 1;
+      updateNavDots();
+    } else {
+      if (D.coins < c.price) return;
+      D.coins -= c.price;
+      renderCoins();
+    }
     const won = rollCase(c);
     const sp = window.Tree.get(won), r = window.Tree.RARITIES[sp.rarity];
     const isNew = !owns(won);
@@ -1602,13 +1643,13 @@
       burst(box.left + box.width / 2, box.top + box.height * 0.35, { n: big ? 110 : 50, up: true, speed: big ? 10 : 7, colors: [r.color, '#ffffff', sp.leaf1, sp.leaf2] });
       if (!isNew) renderCoins();
       setTimeout(() => checkAchievements(), 900);
-      const again = D.coins >= c.price;
+      const freeLeft = freeCount(c.id), again = freeLeft > 0 || D.coins >= c.price;
       $('#co-actions').innerHTML = `<button class="btn ghost" data-a="close">Close</button>
         ${T.state === 'idle' ? '<button class="btn" data-a="use">Use this tree</button>' : ''}
-        <button class="btn primary" data-a="again"${again ? '' : ' disabled'}>Open another <span class="coin sm"></span>${c.price}</button>`;
+        <button class="btn primary" data-a="again"${again ? '' : ' disabled'}>${freeLeft ? `Open another free (${freeLeft})` : `Open another <span class="coin sm"></span>${c.price}`}</button>`;
       $$('#co-actions .btn').forEach((b) => b.addEventListener('click', () => {
         const a = b.dataset.a;
-        if (a === 'again') return openCase(c);
+        if (a === 'again') return openCase(c, freeCount(c.id) > 0);
         if (a === 'use') { D.selectedTree = T.tree = won; save(); toast(`${esc(sp.name)} will grow in your next session`); }
         ov.classList.add('closing');
         setTimeout(() => { ov.classList.add('hidden'); ov.classList.remove('closing'); renderTrees(); }, 300);
@@ -1624,6 +1665,7 @@
     { id: 'time', name: 'Time spent', sub: 'Hours of study, all subjects together' },
     { id: 'grown', name: 'Trees grown', sub: 'Trees planted in your garden' },
     { id: 'collected', name: 'Trees collected', sub: 'Species unlocked from cases' },
+    { id: 'school', name: 'School', sub: 'Planning tests and tracking your grades' },
   ];
   const TIERS = {
     bronze: ['#ffd3a8', '#c9773a', '#7a3f16'], silver: ['#ffffff', '#b4bfcc', '#5b6675'], gold: ['#fff4b0', '#f5b301', '#9a6200'],
@@ -1661,6 +1703,11 @@
     { id: 'case-1', cat: 'collected', name: 'Unboxer', desc: 'Open your first case', metric: 'opened', goal: 1, tier: 'bronze', label: '1', icon: 'box' },
     { id: 'case-10', cat: 'collected', name: 'Case cracker', desc: 'Open 10 cases', metric: 'opened', goal: 10, tier: 'silver', label: '10', icon: 'box' },
     { id: 'case-50', cat: 'collected', name: 'High roller', desc: 'Open 50 cases', metric: 'opened', goal: 50, tier: 'gold', label: '50', icon: 'box' },
+    { id: 'plan-1', cat: 'school', name: 'Planner', desc: 'Add a test, exam or assignment to the calendar', metric: 'planned', goal: 1, tier: 'bronze', label: '1', icon: 'cal' },
+    { id: 'plan-10', cat: 'school', name: 'Organised', desc: 'Add 10 tests, exams or assignments', metric: 'planned', goal: 10, tier: 'silver', label: '10', icon: 'cal' },
+    { id: 'grade-1', cat: 'school', name: 'Report card', desc: 'Record your first grade', metric: 'graded', goal: 1, tier: 'bronze', label: '1', icon: 'grade' },
+    { id: 'grade-10', cat: 'school', name: 'Keeping score', desc: 'Record 10 grades', metric: 'graded', goal: 10, tier: 'silver', label: '10', icon: 'grade' },
+    { id: 'grade-top', cat: 'school', name: 'Top marks', desc: 'Score 90% or more on a test, exam or assignment', metric: 'top', goal: 1, tier: 'silver', label: '90', icon: 'star' },
   ];
   function badgeMetrics() {
     const counted_ = D.sessions.filter(counted);
@@ -1671,6 +1718,9 @@
       grown: D.trees.length,
       owned: owned.length,
       opened: (D.collection && D.collection.opened) || 0,
+      planned: D.events.length,
+      graded: D.events.filter((e) => evPct(e) != null).length,
+      top: D.events.filter((e) => evPct(e) >= 90).length,
       rarity: (r) => owned.filter((x) => x.rarity === r).length,
     };
   }
@@ -1688,6 +1738,9 @@
     leaf: '<path d="M33 64C33 40 48 30 68 30c0 24-12 34-30 34z" fill="currentColor"/><path d="M34 64l20-20" stroke="rgba(0,0,0,.25)" stroke-width="3" stroke-linecap="round"/>',
     crown: '<path d="M32 62h36l4-26-12 10-10-16-10 16-12-10z" fill="currentColor"/>',
     gem: '<path d="M38 34h24l9 11-21 25-21-25z" fill="currentColor"/><path d="M29 45h42M44 34l6 36 6-36" stroke="rgba(0,0,0,.22)" stroke-width="2" fill="none"/>',
+    cal: '<rect x="30" y="32" width="40" height="34" rx="5" fill="currentColor"/><path d="M30 42h40" stroke="rgba(0,0,0,.25)" stroke-width="3"/><path d="M39 27v9M61 27v9" stroke="currentColor" stroke-width="5" stroke-linecap="round"/><path d="M41 54l6 6 12-12" fill="none" stroke="rgba(255,255,255,.75)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>',
+    grade: '<path d="M34 28h24l10 10v30H34z" fill="currentColor"/><path d="M42 58l7-20 7 20M45 51h8" fill="none" stroke="rgba(255,255,255,.8)" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>',
+    star: '<path d="M50 27l6.5 13.5 14.5 2-10.5 10 2.5 14.5L50 60l-13 7 2.5-14.5-10.5-10 14.5-2z" fill="currentColor"/>',
     box: '<path d="M32 42h36v24H32z" fill="currentColor"/><path d="M29 34h42v9H29z" fill="currentColor" opacity=".8"/><path d="M47 34h6v32h-6z" fill="rgba(255,255,255,.55)"/>',
   };
   function badgeSvg(b, uidKey) {
@@ -1717,6 +1770,7 @@
     save();
     if (!silent) { badgeQueue.push(...fresh); showNextBadge(); }
     if (currentPage === 'badges') renderBadges();
+    updateNavDots();
     return fresh;
   }
   function showNextBadge() {
@@ -1725,7 +1779,7 @@
     const b = badgeQueue.shift();
     const el = document.createElement('div');
     el.className = 'badge-pop';
-    el.innerHTML = `<div class="bp-card" style="--tc:${TIERS[b.tier][1]}"><div class="bp-rays"></div><div class="bp-badge">${badgeSvg(b, 'pop' + b.id)}</div><div class="bp-kicker">Badge unlocked</div><h2>${esc(b.name)}</h2><p>${esc(b.desc)}</p>${badgeQueue.length ? `<span class="bp-more">+${badgeQueue.length} more</span>` : ''}</div>`;
+    el.innerHTML = `<div class="bp-card" style="--tc:${TIERS[b.tier][1]}"><div class="bp-rays"></div><div class="bp-badge">${badgeSvg(b, 'pop' + b.id)}</div><div class="bp-kicker">Badge unlocked</div><h2>${esc(b.name)}</h2><p>${esc(b.desc)}</p><div class="bp-reward"><b>${rewardChip(rewardOf(b))}</b><span>Claim it on the Badges page</span></div>${badgeQueue.length ? `<span class="bp-more">+${badgeQueue.length} more</span>` : ''}</div>`;
     document.body.appendChild(el);
     requestAnimationFrame(() => {
       const r = $('.bp-badge', el).getBoundingClientRect();
@@ -1762,9 +1816,26 @@
             <div class="badge-desc">${esc(b.desc)}</div>
             ${on ? `<div class="badge-when">Earned ${new Date(D.achievements[b.id]).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })}</div>`
               : `<div class="badge-prog"><i style="--p:${(pr.cur / pr.goal).toFixed(3)}"></i></div><div class="badge-when">${curTxt}</div>`}
+            ${on && !D.badgeClaims[b.id] ? `<button class="btn primary small claim-btn" title="${esc(rewardText(rewardOf(b)))}">Claim ${rewardShort(rewardOf(b))}</button>`
+              : `<div class="badge-reward${on ? ' claimed' : ''}">${on ? `${CHECK}<span>${esc(rewardText(rewardOf(b)))}</span>` : rewardChip(rewardOf(b))}</div>`}
           </div>`;
         }).join('')}</div></section>`;
     }).join('');
+    const unc = unclaimed();
+    $('#bd-claim-all').classList.toggle('hidden', unc.length < 2);
+    $('#bd-claim-all').innerHTML = `Claim all ${unc.length} rewards`;
+    $$('#badge-cats .claim-btn').forEach((btn) => btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const el = btn.closest('.badge'), b = BADGES.find((x) => x.id === el.dataset.b);
+      claimReward(b, $('.badge-art', el));
+      el.classList.add('just-claimed');
+      const r = rewardOf(b);
+      btn.outerHTML = `<div class="badge-reward claimed pop-in">${CHECK}<span>${esc(rewardText(r))}</span></div>`;
+      const left = unclaimed().length;
+      $('#bd-claim-all').classList.toggle('hidden', left < 2);
+      $('#bd-claim-all').innerHTML = `Claim all ${left} rewards`;
+      if (r.box && !claimingAll) toast(`${caseName(r.box)} added. Open it free on the Trees page`, 3200);
+    }));
     // a little 3D tilt that follows the mouse
     $$('#badge-cats .badge').forEach((el) => {
       el.addEventListener('mousemove', (e) => {
@@ -1783,6 +1854,501 @@
     });
   }
 
+
+  // ---------------- free cases + achievement rewards (1.5.0) ----------------
+  // Rewards are claimed on the Badges page. Small coin rewards for easy badges, free cases for big ones.
+  // Sized against 65 coins per hour of study so they feel good without flooding the economy.
+  const TIER_REWARD = {
+    bronze: { coins: 20 },
+    silver: { coins: 50 },
+    gold: { box: 'sapling' },
+    platinum: { box: 'grove' },
+    diamond: { box: 'grove', coins: 250 },
+    mythic: { box: 'vault', coins: 500 },
+  };
+  const BADGE_REWARD = { 'coll-all': { coins: 1500 } }; // nothing left to unlock, so coins instead
+  const rewardOf = (b) => BADGE_REWARD[b.id] || TIER_REWARD[b.tier] || { coins: 0 };
+  const caseName = (id) => (CASES.find((c) => c.id === id) || {}).name || 'Case';
+  function rewardText(r) {
+    const parts = [];
+    if (r.box) parts.push(caseName(r.box));
+    if (r.coins) parts.push(`${r.coins} coins`);
+    return parts.join(' + ');
+  }
+  function rewardChip(r) {
+    return `${r.box ? `<span class="rw-box" style="--cc:${CASES.find((c) => c.id === r.box).color}"></span>` : ''}${r.coins && !r.box ? '<span class="coin sm"></span>' : ''}${esc(rewardText(r))}`;
+  }
+  function rewardShort(r) {
+    const box = r.box ? `<span class="rw-box" style="--cc:${CASES.find((c) => c.id === r.box).color}"></span>` : '';
+    if (r.box && r.coins) return `${box}+${r.coins}`;
+    if (r.box) return box;
+    return `<span class="coin sm"></span>${r.coins}`;
+  }
+  const unclaimed = () => BADGES.filter((b) => D.achievements[b.id] && !D.badgeClaims[b.id]);
+  const freeCount = (id) => (D.freeCases && D.freeCases[id]) || 0;
+  const totalFree = () => Object.values(D.freeCases || {}).reduce((a, n) => a + (n > 0 ? n : 0), 0);
+  function updateNavDots() {
+    const set = (page, n) => {
+      const b = $(`.nav-item[data-page="${page}"]`);
+      if (!b) return;
+      let dot = $('.ndot', b);
+      if (n > 0) {
+        if (!dot) { dot = document.createElement('i'); dot.className = 'ndot'; b.appendChild(dot); }
+        dot.textContent = n > 9 ? '9+' : n;
+      } else if (dot) dot.remove();
+    };
+    set('badges', unclaimed().length);
+    set('trees', totalFree());
+  }
+  // flies a little gift box from an element to the Trees tab
+  function flyGift(fromEl, color) {
+    const to = $('.nav-item[data-page="trees"]').getBoundingClientRect();
+    const fr = fromEl.getBoundingClientRect();
+    const g = document.createElement('div');
+    g.className = 'flying-gift';
+    g.style.setProperty('--cc', color);
+    const sx = fr.left + fr.width / 2 - 14, sy = fr.top + fr.height / 2 - 14;
+    g.style.left = sx + 'px'; g.style.top = sy + 'px';
+    document.body.appendChild(g);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      g.style.transform = `translate(${to.left + to.width / 2 - 14 - sx}px, ${to.top + to.height / 2 - 14 - sy}px) scale(.6) rotate(-20deg)`;
+      g.style.opacity = '.4';
+    }));
+    setTimeout(() => {
+      g.remove();
+      const nav = $('.nav-item[data-page="trees"]');
+      nav.classList.remove('bump'); void nav.offsetWidth; nav.classList.add('bump');
+      updateNavDots();
+    }, 950);
+  }
+  function claimReward(b, el) {
+    if (!D.achievements[b.id] || D.badgeClaims[b.id]) return;
+    const r = rewardOf(b);
+    D.badgeClaims[b.id] = new Date().toISOString();
+    if (r.coins) D.coins += r.coins;
+    if (r.box) D.freeCases[r.box] = freeCount(r.box) + 1;
+    save(true);
+    if (el) {
+      const rr = el.getBoundingClientRect();
+      burst(rr.left + rr.width / 2, rr.top + rr.height / 2, { n: 30, speed: 5, shape: ['star4', 'dot'], glow: true, colors: [...TIERS[b.tier], '#ffffff'] });
+      if (r.coins) flyCoins(el, Math.min(r.coins, 30)); else renderCoins();
+      if (r.box) flyGift(el, CASES.find((c) => c.id === r.box).color);
+    } else renderCoins();
+    updateNavDots();
+  }
+  let claimingAll = false;
+  function claimAll() {
+    const btns = $$('#badge-cats .claim-btn');
+    if (!btns.length) return;
+    const boxes = unclaimed().filter((b) => rewardOf(b).box).length;
+    claimingAll = true;
+    btns.forEach((b, i) => setTimeout(() => b.click(), i * 170));
+    setTimeout(() => { claimingAll = false; if (boxes) toast(`${boxes} free case${boxes > 1 ? 's' : ''} added. Open ${boxes > 1 ? 'them' : 'it'} on the Trees page`, 3600); }, btns.length * 170 + 50);
+  }
+  function showGiftNotice() {
+    if (!D.giftNotice) return;
+    const kind = D.giftNotice;
+    delete D.giftNotice;
+    save();
+    setTimeout(() => toast(kind === 'welcome'
+      ? '🎁 Here\'s a free Seed Pouch to start your collection. Open it on the Trees page'
+      : '🎁 Thanks for studying with us! A free Seed Pouch is waiting on the Trees page', 5200), 1800);
+    updateNavDots();
+  }
+
+  // ---------------- grading (Australian scales) ----------------
+  const SCALES = {
+    school: { name: 'School (A to E)', grades: [['A', 85], ['B', 70], ['C', 50], ['D', 30], ['E', 0]] },
+    uni: { name: 'University (HD to F)', grades: [['HD', 85], ['D', 75], ['C', 65], ['P', 50], ['F', 0]] },
+  };
+  function scaleGrades() {
+    const sc = SCALES[D.grading.scale] || SCALES.school;
+    const cuts = (D.grading.cuts && D.grading.cuts[D.grading.scale]) || {};
+    return sc.grades.map(([l, min], i) => ({ l, min: i === sc.grades.length - 1 ? 0 : (Number.isFinite(cuts[l]) ? cuts[l] : min), i, n: sc.grades.length }));
+  }
+  function letterOf(p) {
+    if (p == null || !Number.isFinite(p)) return null;
+    return scaleGrades().find((g) => p >= g.min - 1e-9) || scaleGrades().slice(-1)[0];
+  }
+  // green for top grades through to red for the lowest
+  const gradeColor = (g) => (g ? `hsl(${Math.round(140 - (g.i / Math.max(1, g.n - 1)) * 140)} 70% 52%)` : 'var(--muted)');
+  const fmtPct = (p) => `${(Math.round(p * 10) / 10).toFixed(Math.abs(p - Math.round(p)) < 0.05 ? 0 : 1)}%`;
+  const gradeTag = (p) => { const g = letterOf(p); return g ? `<span class="gtag" style="--gc:${gradeColor(g)}">${esc(g.l)}</span>` : ''; };
+
+  // ---------------- calendar ----------------
+  const EV_TYPES = { test: 'Test', exam: 'Exam', assignment: 'Assignment' };
+  const EV_ICON = {
+    test: '<svg viewBox="0 0 24 24"><path d="M9 4h6l1 2h3v15H5V6h3z"/><path d="M9 12l2 2 4-4"/></svg>',
+    exam: '<svg viewBox="0 0 24 24"><path d="M4 5h11l5 5v9H4z"/><path d="M8 11h8M8 15h5"/></svg>',
+    assignment: '<svg viewBox="0 0 24 24"><path d="M14 3H6v18h12V7z"/><path d="M14 3v4h4M9 13h6M9 17h4"/></svg>',
+  };
+  const evPct = (e) => (e.score != null && e.outOf > 0 ? (e.score / e.outOf) * 100 : null);
+  const todayKey = () => dayKey(new Date());
+  const evIsPast = (e) => e.date <= todayKey(); // grades can be added from the day of the test onwards
+  const evDate = (e) => new Date(`${e.date}T${e.time || '00:00'}`);
+  const evLabel = (e) => e.title || `${e.subject} ${EV_TYPES[e.type].toLowerCase()}`;
+  function daysUntil(key) {
+    const a = startOfDay(new Date()), b = new Date(`${key}T00:00`);
+    return Math.round((b - a) / 86400000);
+  }
+  function whenText(e) {
+    const n = daysUntil(e.date);
+    const t = e.time ? ` at ${fmtTime(evDate(e))}` : '';
+    if (n === 0) return `Today${t}`;
+    if (n === 1) return `Tomorrow${t}`;
+    if (n === -1) return 'Yesterday';
+    if (n > 1 && n < 7) return `${evDate(e).toLocaleDateString([], { weekday: 'long' })}${t}`;
+    if (n > 0) return `in ${n} days`;
+    return `${-n} days ago`;
+  }
+  const fmtEvDate = (e) => evDate(e).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', year: daysUntil(e.date) > 300 || daysUntil(e.date) < -300 ? 'numeric' : undefined });
+  const CAL = { month: new Date(new Date().getFullYear(), new Date().getMonth(), 1), sel: null };
+
+  function renderCalendar(dir) {
+    const m = CAL.month;
+    $('#cal-label').innerHTML = `<span class="${dir ? (dir > 0 ? 'slide-in-r' : 'slide-in-l') : ''}">${m.toLocaleDateString([], { month: 'long', year: 'numeric' })}</span>`;
+    const first = startOfWeek(m);
+    const tk = todayKey();
+    const byDay = {};
+    D.events.forEach((e) => { (byDay[e.date] = byDay[e.date] || []).push(e); });
+    Object.values(byDay).forEach((l) => l.sort((a, b) => (a.time || '').localeCompare(b.time || '')));
+    let h = DOW.map((d) => `<div class="cal-dow">${d}</div>`).join('');
+    for (let i = 0; i < 42; i++) {
+      const d = addDays(first, i), k = dayKey(d), evs = byDay[k] || [];
+      const out = d.getMonth() !== m.getMonth();
+      if (i === 35 && out) break; // only show a 6th row when the month needs it
+      h += `<div class="cal-day${out ? ' out' : ''}${k === tk ? ' today' : ''}${k === CAL.sel ? ' sel' : ''}${k < tk ? ' past' : ''}" data-k="${k}" style="--i:${i}">
+        <span class="cd-num">${d.getDate()}</span>
+        <div class="cd-evs">${evs.slice(0, 3).map((e) => `<span class="cd-ev t-${e.type}" style="--c:${colorOf(e.subject)}" data-id="${e.id}"><i></i>${esc(evLabel(e))}</span>`).join('')}${evs.length > 3 ? `<span class="cd-more">+${evs.length - 3} more</span>` : ''}</div>
+        <button class="cd-add" title="Add on this day">+</button>
+      </div>`;
+    }
+    const grid = $('#cal-grid');
+    grid.innerHTML = h;
+    grid.classList.remove('slide-l', 'slide-r');
+    if (dir) { void grid.offsetWidth; grid.classList.add(dir > 0 ? 'slide-r' : 'slide-l'); }
+    $$('.cal-day', grid).forEach((c) => {
+      c.addEventListener('click', (ev) => {
+        const evEl = ev.target.closest('.cd-ev');
+        if (evEl) { openEventModal(D.events.find((x) => x.id === evEl.dataset.id)); return; }
+        if (ev.target.closest('.cd-add')) { openEventModal(null, c.dataset.k); return; }
+        CAL.sel = CAL.sel === c.dataset.k ? null : c.dataset.k;
+        $$('.cal-day', grid).forEach((x) => x.classList.toggle('sel', x.dataset.k === CAL.sel));
+        renderCalSide();
+      });
+      c.addEventListener('dblclick', (ev) => { if (!ev.target.closest('.cd-ev')) openEventModal(null, c.dataset.k); });
+    });
+    renderCalSide();
+  }
+  function evRow(e, i, opts = {}) {
+    const p = evPct(e);
+    return `<div class="ev-row t-${e.type}" style="--c:${colorOf(e.subject)};--i:${i}" data-id="${e.id}">
+      <span class="ev-ic">${EV_ICON[e.type]}</span>
+      <div class="ev-main"><div class="ev-title">${esc(evLabel(e))}</div>
+        <div class="ev-meta"><span class="ev-sub"><i></i>${esc(e.subject)}</span><span>${EV_TYPES[e.type]}</span>${e.weight ? `<span>${fmtPct(e.weight)} weight</span>` : ''}</div></div>
+      <div class="ev-right">${p != null ? `<span class="ev-grade">${fmtPct(p)}</span>${gradeTag(p)}`
+        : opts.grade ? '<button class="btn small primary ev-grade-btn">Add grade</button>'
+          : `<span class="ev-when${daysUntil(e.date) <= 3 && daysUntil(e.date) >= 0 ? ' soon' : ''}">${whenText(e)}</span><span class="ev-date">${fmtEvDate(e)}</span>`}</div>
+    </div>`;
+  }
+  function renderCalSide() {
+    const tk = todayKey();
+    const up = D.events.filter((e) => e.date >= tk && evPct(e) == null).sort((a, b) => evDate(a) - evDate(b));
+    const needs = D.events.filter((e) => evIsPast(e) && evPct(e) == null).sort((a, b) => evDate(b) - evDate(a));
+    let html = '';
+    if (CAL.sel) {
+      const day = D.events.filter((e) => e.date === CAL.sel).sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+      const d = new Date(`${CAL.sel}T00:00`);
+      html += `<div class="card cal-side-card"><div class="card-head"><h3>${d.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long' })}</h3><button class="btn small" id="cal-add-day">+ Add</button></div>
+        <div class="ev-list">${day.length ? day.map((e, i) => evRow(e, i, { grade: evIsPast(e) })).join('') : '<div class="empty">Nothing on this day.</div>'}</div></div>`;
+    }
+    html += `<div class="card cal-side-card"><div class="card-head"><h3>Coming up</h3><span class="muted">${up.length ? `${up.length} to go` : ''}</span></div>
+      <div class="ev-list">${up.length ? up.slice(0, 8).map((e, i) => evRow(e, i)).join('') : '<div class="empty">No tests or assignments coming up. Press Add to put one in.</div>'}</div></div>`;
+    if (needs.length) {
+      html += `<div class="card cal-side-card needs"><div class="card-head"><h3>Add your grades</h3><span class="muted">${needs.length} waiting</span></div>
+        <div class="ev-list">${needs.slice(0, 6).map((e, i) => evRow(e, i, { grade: true })).join('')}</div></div>`;
+    }
+    const graded = D.events.filter((e) => evPct(e) != null).sort((a, b) => evDate(b) - evDate(a));
+    if (graded.length) {
+      html += `<div class="card cal-side-card"><div class="card-head"><h3>Past grades</h3><span class="muted">${graded.length}</span></div>
+        <div class="ev-list">${graded.slice(0, 6).map((e, i) => evRow(e, i)).join('')}</div>${graded.length > 6 ? '<p class="muted tiny-note">See every grade for a subject in the Grades tab.</p>' : ''}</div>`;
+    }
+    const side = $('#cal-side');
+    side.innerHTML = html;
+    $$('.ev-row', side).forEach((r) => r.addEventListener('click', () => openEventModal(D.events.find((x) => x.id === r.dataset.id), null, !!r.querySelector('.ev-grade-btn'))));
+    const addDay = $('#cal-add-day');
+    if (addDay) addDay.addEventListener('click', () => openEventModal(null, CAL.sel));
+    $('#cal-count').textContent = `${D.events.filter((e) => e.date >= tk).length}`;
+    $('#cal-next').textContent = up[0] ? whenText(up[0]).replace(/ at .*/, '') : 'Nothing';
+  }
+
+  // the add / edit form for a test, exam or assignment
+  function openEventModal(ev, dateKey, focusGrade) {
+    if (!activeSubjects().length && !ev) { toast('Add a subject in Settings first'); return; }
+    const e = ev ? Object.assign({}, ev) : { id: uid(), type: 'test', title: '', subject: (activeSubjects()[0] || {}).name, date: dateKey || todayKey(), time: '', weight: null, score: null, outOf: 100 };
+    const subs = activeSubjects().map((s) => s.name);
+    if (e.subject && !subs.includes(e.subject)) subs.push(e.subject);
+    const back = document.createElement('div');
+    back.className = 'modal-back';
+    back.innerHTML = `<div class="modal ev-modal">
+      <h2>${ev ? 'Edit' : 'Add'} ${EV_TYPES[e.type].toLowerCase()}</h2>
+      <div class="seg ev-type"><div class="seg-pill"></div>${Object.entries(EV_TYPES).map(([k, v]) => `<button data-t="${k}"${k === e.type ? ' class="active"' : ''}>${EV_ICON[k]}${v}</button>`).join('')}</div>
+      <div class="ev-form">
+        <label class="span2">Subject<select class="select" id="ev-subject">${subs.map((s) => `<option${s === e.subject ? ' selected' : ''}>${esc(s)}</option>`).join('')}</select></label>
+        <label class="span2"><span>Name <span class="opt">(optional)</span></span><input class="input" id="ev-title" maxlength="60" placeholder="e.g. Unit 3 SAC 1" value="${esc(e.title || '')}"></label>
+        <label>Date<input type="date" class="input" id="ev-date" value="${e.date}"></label>
+        <label class="ev-time-wrap${e.type === 'assignment' ? ' show' : ''}"><span>Due time <span class="opt">(optional)</span></span><input type="time" class="input" id="ev-time" value="${e.time || ''}"></label>
+        <label class="span2"><span>Weight <span class="opt">(optional, % of the subject's final grade)</span></span><div class="suffix-in"><input type="number" class="input" id="ev-weight" min="0" max="100" step="0.5" placeholder="e.g. 20" value="${e.weight ?? ''}"><b>%</b></div></label>
+        <div class="span2 ev-grade-wrap${evIsPast(e) ? ' show' : ''}"><div class="ev-grade-inner">
+          <span class="lbl">Grade <span class="opt">(you can add this once it's done)</span></span>
+          <div class="score-row"><input type="number" class="input" id="ev-score" min="0" step="0.5" placeholder="Score" value="${e.score ?? ''}"><span class="of">out of</span><input type="number" class="input" id="ev-outof" min="1" step="0.5" value="${e.outOf || 100}"><span class="ev-preview" id="ev-preview"></span></div>
+        </div></div>
+      </div>
+      <p class="ev-err" id="ev-err"></p>
+      <div class="m-actions">${ev ? '<button class="btn ghost danger-text" data-a="del">Delete</button><span class="sp"></span>' : ''}<button class="btn ghost" data-a="cancel">Cancel</button><button class="btn primary" data-a="save">${ev ? 'Save' : 'Add'}</button></div>
+    </div>`;
+    $('#modal-host').appendChild(back);
+    const seg = $('.ev-type', back);
+    const place = () => { const a = $('button.active', seg), p = $('.seg-pill', seg); p.style.width = a.offsetWidth + 'px'; p.style.transform = `translateX(${a.offsetLeft}px)`; };
+    requestAnimationFrame(place);
+    const preview = () => {
+      const s = parseFloat($('#ev-score', back).value), o = parseFloat($('#ev-outof', back).value);
+      const p = Number.isFinite(s) && o > 0 ? (s / o) * 100 : null;
+      $('#ev-preview', back).innerHTML = p != null ? `${fmtPct(p)} ${gradeTag(p)}` : '';
+    };
+    preview();
+    $$('button', seg).forEach((b) => b.addEventListener('click', () => {
+      e.type = b.dataset.t;
+      $$('button', seg).forEach((x) => x.classList.toggle('active', x === b));
+      place();
+      $('h2', back).textContent = `${ev ? 'Edit' : 'Add'} ${EV_TYPES[e.type].toLowerCase()}`;
+      $('.ev-time-wrap', back).classList.toggle('show', e.type === 'assignment');
+    }));
+    $('#ev-date', back).addEventListener('change', () => {
+      $('.ev-grade-wrap', back).classList.toggle('show', !!$('#ev-date', back).value && $('#ev-date', back).value <= todayKey());
+    });
+    $('#ev-score', back).addEventListener('input', preview);
+    $('#ev-outof', back).addEventListener('input', preview);
+    const close = () => { back.classList.add('closing'); setTimeout(() => back.remove(), 260); document.removeEventListener('keydown', onKey); };
+    const err = (m) => { const el = $('#ev-err', back); el.textContent = m; $('.modal', back).classList.remove('shake'); void back.offsetWidth; $('.modal', back).classList.add('shake'); };
+    const onKey = (k) => { if (k.key === 'Escape') close(); if (k.key === 'Enter' && k.target.matches('input')) $('[data-a=save]', back).click(); };
+    document.addEventListener('keydown', onKey);
+    back.addEventListener('mousedown', (x) => { if (x.target === back) close(); });
+    $$('.m-actions .btn', back).forEach((b) => b.addEventListener('click', async () => {
+      const a = b.dataset.a;
+      if (a === 'cancel') return close();
+      if (a === 'del') {
+        close();
+        const ok = await modal({ title: `Delete ${esc(evLabel(ev))}?`, body: ev.score != null ? 'Its grade is deleted too.' : '', actions: [{ label: 'Keep', ghost: true, value: false }, { label: 'Delete', danger: true, value: true }] });
+        if (!ok) return;
+        D.events = D.events.filter((x) => x.id !== ev.id);
+        save(); refreshSchool();
+        toast('Deleted');
+        return;
+      }
+      const date = $('#ev-date', back).value;
+      if (!date) return err('Pick a date.');
+      const w = $('#ev-weight', back).value.trim(), sc = $('#ev-score', back).value.trim(), of = $('#ev-outof', back).value.trim();
+      const weight = w === '' ? null : +w;
+      if (weight != null && (!(weight >= 0) || weight > 100)) return err('Weight should be between 0 and 100%.');
+      const score = sc === '' || date > todayKey() ? null : +sc;
+      const outOf = of === '' ? 100 : +of;
+      if (score != null && !(score >= 0)) return err('The score should be a number.');
+      if (score != null && !(outOf > 0)) return err('"Out of" should be more than 0.');
+      if (score != null && score > outOf * 1.5) return err(`A score of ${score} out of ${outOf} looks too high.`);
+      Object.assign(e, {
+        subject: $('#ev-subject', back).value, title: $('#ev-title', back).value.trim(), date,
+        time: e.type === 'assignment' ? $('#ev-time', back).value : '', weight, score, outOf,
+      });
+      const hadGrade = ev && ev.score != null;
+      const i = D.events.findIndex((x) => x.id === e.id);
+      if (i >= 0) D.events[i] = e; else D.events.push(e);
+      save();
+      close();
+      const r = $('.modal', back).getBoundingClientRect();
+      burst(r.left + r.width / 2, r.top + 40, { n: 26, up: true, speed: 5, leaf: false, colors: [colorOf(e.subject), '#ffffff', '#fde68a'] });
+      if (score != null && !hadGrade) toast(`${esc(evLabel(e))}: ${fmtPct(evPct(e))} ${gradeTag(evPct(e))}`, 3200);
+      else toast(ev ? 'Saved' : `${EV_TYPES[e.type]} added for ${evDate(e).toLocaleDateString([], { day: 'numeric', month: 'short' })}`);
+      if (!ev && e.date.slice(0, 7) !== dayKey(CAL.month).slice(0, 7)) CAL.month = new Date(evDate(e).getFullYear(), evDate(e).getMonth(), 1);
+      refreshSchool();
+      checkAchievements();
+    }));
+    setTimeout(() => { const f = focusGrade ? $('#ev-score', back) : null; if (f) f.focus(); }, 80);
+  }
+  function refreshSchool() {
+    if (currentPage === 'calendar') renderCalendar();
+    if (currentPage === 'grades') renderGrades();
+  }
+
+  // ---------------- grade calculator ----------------
+  const G = { subject: null };
+  function gradeItems(subject) {
+    const evs = D.events.filter((e) => e.subject === subject).sort((a, b) => evDate(a) - evDate(b))
+      .map((e) => ({ src: 'cal', id: e.id, name: evLabel(e), type: e.type, date: e.date, pct: evPct(e), weight: e.weight }));
+    const extra = (D.gradeExtras[subject] || []).map((x) => ({ src: 'extra', id: x.id, name: x.name, pct: x.pct, weight: x.weight }));
+    return evs.concat(extra);
+  }
+  function gradeMath(items) {
+    const graded = items.filter((x) => x.pct != null);
+    const gw = graded.filter((x) => x.weight > 0);
+    const allW = items.filter((x) => x.weight > 0).reduce((a, x) => a + x.weight, 0);
+    const total = Math.max(100, allW);
+    let avg = null, mode = 'none';
+    if (gw.length) { mode = 'weighted'; avg = gw.reduce((a, x) => a + x.pct * x.weight, 0) / gw.reduce((a, x) => a + x.weight, 0); }
+    else if (graded.length) { mode = 'plain'; avg = graded.reduce((a, x) => a + x.pct, 0) / graded.length; }
+    const doneW = gw.reduce((a, x) => a + x.weight, 0);
+    const earned = gw.reduce((a, x) => a + x.pct * x.weight, 0) / total; // points already locked in (of 100)
+    const remainW = Math.max(0, total - doneW);
+    const upcomingW = items.filter((x) => x.pct == null && x.weight > 0).reduce((a, x) => a + x.weight, 0);
+    return { graded, gw, avg, mode, doneW, earned, remainW, upcomingW, total, allW, unweighted: graded.length - gw.length };
+  }
+  function renderGrades() {
+    const subs = D.subjects.filter((s) => !s.archived || D.events.some((e) => e.subject === s.name) || D.gradeExtras[s.name]);
+    if (!subs.find((s) => s.name === G.subject)) G.subject = (subs.find((s) => D.events.some((e) => e.subject === s.name)) || subs[0] || {}).name || null;
+    $('#gr-chips').innerHTML = subs.map((s, i) => `<button class="chip${s.name === G.subject ? ' selected' : ''}" style="--c:${s.color};--i:${i}" data-s="${esc(s.name)}"><span class="dot"></span>${esc(s.name)}</button>`).join('') || '<div class="empty">Add a subject in Settings first.</div>';
+    $$('#gr-chips .chip').forEach((c) => c.addEventListener('click', () => {
+      if (G.subject === c.dataset.s) return;
+      G.subject = c.dataset.s;
+      $$('#gr-chips .chip').forEach((x) => x.classList.toggle('selected', x === c));
+      renderGradeBody(true);
+    }));
+    renderGradeBody(true);
+  }
+  function renderGradeBody(fresh) {
+    const host = $('#gr-body');
+    if (!G.subject) { host.innerHTML = ''; return; }
+    const items = gradeItems(G.subject);
+    const color = colorOf(G.subject);
+    const row = (x, i) => x.src === 'cal'
+      ? `<div class="gi-row from-cal" style="--i:${i}" data-id="${x.id}"><span class="gi-ic">${EV_ICON[x.type]}</span>
+          <div class="gi-name"><b>${esc(x.name)}</b><span class="muted">${EV_TYPES[x.type]} · ${fmtEvDate({ date: x.date })}</span></div>
+          <span class="gi-w">${x.weight ? fmtPct(x.weight) : '<span class="muted">no weight</span>'}</span>
+          <span class="gi-score">${x.pct != null ? `${fmtPct(x.pct)} ${gradeTag(x.pct)}` : `<span class="muted">${x.date > todayKey() ? 'Upcoming' : 'No grade yet'}</span>`}</span>
+          <span class="gi-act"><button class="icon-btn sm gi-edit" title="Edit in calendar"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg></button></span></div>`
+      : `<div class="gi-row extra" style="--i:${i}" data-id="${x.id}"><span class="gi-ic plus"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></span>
+          <div class="gi-name"><input class="input gi-in-name" maxlength="50" placeholder="Assessment name" value="${esc(x.name || '')}"></div>
+          <span class="gi-w"><span class="suffix-in sm"><input type="number" class="input gi-in-w" min="0" max="100" step="0.5" placeholder="Weight" value="${x.weight ?? ''}"><b>%</b></span></span>
+          <span class="gi-score"><span class="suffix-in sm"><input type="number" class="input gi-in-p" min="0" max="150" step="0.5" placeholder="Score" value="${x.pct ?? ''}"><b>%</b></span><span class="gi-tag">${x.pct != null ? gradeTag(x.pct) : ''}</span></span>
+          <span class="gi-act"><button class="icon-btn sm gi-del" title="Remove">${XICON}</button></span></div>`;
+    host.innerHTML = `<div class="grades-layout">
+      <div class="card gr-items stagger" style="--i:2">
+        <div class="card-head"><h3>Assessments</h3><span class="muted">From your calendar, plus any you add here</span></div>
+        <div class="gi-head"><span></span><span>Assessment</span><span>Weight</span><span>Score</span><span></span></div>
+        <div class="gi-list">${items.length ? items.map(row).join('') : '<div class="empty">Nothing for this subject yet. Add tests in the Calendar, or add one below.</div>'}</div>
+        <div class="btn-row"><button class="btn" id="gi-add"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Add an assessment</button><button class="btn ghost" id="gi-cal">Add to calendar</button></div>
+        <p class="muted tiny-note">Leave the score empty for ones you haven't done yet. Weights are the % of your final grade each one is worth.</p>
+      </div>
+      <div class="gr-side">
+        <div class="card gr-result stagger" style="--i:3;--c:${color}" id="gr-result"></div>
+        <div class="card gr-target stagger" style="--i:4" id="gr-target"></div>
+      </div>
+    </div>`;
+    if (!fresh) $$('.stagger', host).forEach((el) => el.classList.add('anim-done'));
+    wireGradeRows();
+    renderGradeResult();
+  }
+  function wireGradeRows() {
+    const host = $('#gr-body');
+    $('#gi-add', host).addEventListener('click', () => {
+      (D.gradeExtras[G.subject] = D.gradeExtras[G.subject] || []).push({ id: uid(), name: '', pct: null, weight: null });
+      save();
+      renderGradeBody(false);
+      const ins = $$('.gi-row.extra .gi-in-name', host);
+      if (ins.length) ins[ins.length - 1].focus();
+    });
+    $('#gi-cal', host).addEventListener('click', () => { const s = subj(G.subject); if (s && s.archived) return toast('This subject is finished. Bring it back in Settings to add new tests'); openEventModal(null, todayKey()); setTimeout(() => { const sel = $('#ev-subject'); if (sel) sel.value = G.subject; }, 0); });
+    $$('.gi-row.from-cal', host).forEach((r) => r.addEventListener('click', () => openEventModal(D.events.find((e) => e.id === r.dataset.id), null, true)));
+    $$('.gi-row.extra', host).forEach((r) => {
+      const x = (D.gradeExtras[G.subject] || []).find((y) => y.id === r.dataset.id);
+      if (!x) return;
+      const num = (v) => (v.trim() === '' || !Number.isFinite(+v) ? null : Math.max(0, +v));
+      $('.gi-in-name', r).addEventListener('input', (ev) => { x.name = ev.target.value; save(); });
+      $('.gi-in-w', r).addEventListener('input', (ev) => { x.weight = num(ev.target.value); if (x.weight > 100) x.weight = 100; save(); renderGradeResult(); });
+      $('.gi-in-p', r).addEventListener('input', (ev) => { x.pct = num(ev.target.value); save(); $('.gi-tag', r).innerHTML = x.pct != null ? gradeTag(x.pct) : ''; renderGradeResult(); });
+      $('.gi-del', r).addEventListener('click', () => {
+        D.gradeExtras[G.subject] = D.gradeExtras[G.subject].filter((y) => y.id !== x.id);
+        if (!D.gradeExtras[G.subject].length) delete D.gradeExtras[G.subject];
+        save();
+        r.style.height = r.offsetHeight + 'px'; r.classList.add('removing');
+        setTimeout(() => renderGradeBody(false), 380);
+      });
+    });
+  }
+  function renderGradeResult() {
+    const m = gradeMath(gradeItems(G.subject));
+    const g = letterOf(m.avg);
+    const box = $('#gr-result');
+    const R = 54, C = 2 * Math.PI * R;
+    const prevP = +(box.dataset.p || 0);
+    box.innerHTML = `<div class="card-head"><h3>Current average</h3><span class="muted">${m.mode === 'weighted' ? `from ${fmtPct(m.doneW)} of the weight` : m.mode === 'plain' ? 'plain average (no weights yet)' : ''}</span></div>
+      <div class="gr-ring-wrap">
+        <svg class="gr-ring" viewBox="0 0 140 140"><circle cx="70" cy="70" r="${R}" class="trk"/><circle cx="70" cy="70" r="${R}" class="val" id="gr-ring-val" style="stroke:${gradeColor(g)};stroke-dasharray:${C};stroke-dashoffset:${C * (1 - prevP / 100)}"/></svg>
+        <div class="gr-ring-mid"><span class="gr-letter" style="color:${gradeColor(g)}">${g ? esc(g.l) : '–'}</span><span class="gr-pct" id="gr-pct">${m.avg != null ? fmtPct(m.avg) : 'No grades yet'}</span></div>
+      </div>
+      ${m.mode === 'weighted' ? `<div class="gr-range"><div class="grr-bar"><i class="lo" style="--w:${m.earned.toFixed(2)}%"></i><i class="hi" style="--l:${m.earned.toFixed(2)}%;--w:${(m.remainW / m.total * 100).toFixed(2)}%"></i></div>
+        <div class="grr-legend"><span>Locked in <b>${fmtPct(m.earned)}</b></span><span>Best possible <b>${fmtPct(m.earned + m.remainW / m.total * 100)}</b></span></div></div>` : ''}
+      ${m.unweighted && m.mode === 'weighted' ? `<p class="muted tiny-note">${m.unweighted} graded item${m.unweighted > 1 ? 's have' : ' has'} no weight, so ${m.unweighted > 1 ? 'they aren\'t' : 'it isn\'t'} counted.</p>` : ''}
+      ${m.allW > 100.01 ? `<p class="gr-warn">The weights add up to ${fmtPct(m.allW)}. Usually they add up to 100%.</p>` : ''}`;
+    box.dataset.p = m.avg != null ? Math.min(100, m.avg) : 0;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const v = $('#gr-ring-val');
+      if (v) v.style.strokeDashoffset = C * (1 - (m.avg != null ? Math.min(100, m.avg) : 0) / 100);
+    }));
+    renderGradeTarget(m);
+  }
+  function renderGradeTarget(m) {
+    const box = $('#gr-target');
+    const grades = scaleGrades();
+    const saved = D.gradeTargets[G.subject];
+    let target = saved != null ? saved : (grades.find((x) => x.min <= 80) || grades[0]).min;
+    const opts = grades.filter((x) => x.min > 0).map((x) => `<button class="tg-chip${Math.abs(x.min - target) < 1e-6 ? ' on' : ''}" data-v="${x.min}" style="--gc:${gradeColor(x)}">${esc(x.l)}<small>${x.min}%</small></button>`).join('');
+    let verdict = '';
+    if (m.mode !== 'weighted') {
+      verdict = `<p class="muted">Add weights to your assessments to see what you need on the rest.</p>`;
+    } else if (m.remainW <= 0.001) {
+      verdict = `<div class="tg-verdict done">Everything is graded. Your final result is <b>${fmtPct(m.earned)}</b> ${gradeTag(m.earned)}</div>`;
+    } else {
+      const need = ((target - m.earned) * m.total) / m.remainW;
+      const ng = letterOf(need);
+      if (need <= 0) verdict = `<div class="tg-verdict ok">You've already locked in ${fmtPct(target)}. Even 0% on the rest keeps you there 🎉</div>`;
+      else if (need > 100) verdict = `<div class="tg-verdict no">Out of reach this time: even 100% on everything left gives you <b>${fmtPct(m.earned + m.remainW / m.total * 100)}</b>.</div>`;
+      else verdict = `<div class="tg-verdict"><span class="tg-need" style="--gc:${gradeColor(ng)}"><b id="tg-need-n">${fmtPct(need)}</b>${gradeTag(need)}</span>
+        <span>average needed on the remaining <b>${fmtPct(m.remainW)}</b> of the weight${m.upcomingW > 0 && Math.abs(m.upcomingW - m.remainW) > 0.01 ? ` (${fmtPct(m.upcomingW)} of it is listed)` : ''}</span>
+        <div class="tg-bar"><i style="--p:${Math.min(100, need).toFixed(1)}%;--gc:${gradeColor(ng)}"></i></div></div>`;
+    }
+    box.innerHTML = `<div class="card-head"><h3>What do I need?</h3><span class="muted">Pick a goal</span></div>
+      <div class="tg-chips">${opts}<span class="tg-custom"><input type="number" class="input" id="tg-custom" min="1" max="100" step="0.5" placeholder="Other" value="${grades.some((x) => Math.abs(x.min - target) < 1e-6) ? '' : target}"><b>%</b></span></div>
+      ${verdict}`;
+    $$('.tg-chip', box).forEach((b) => b.addEventListener('click', () => { D.gradeTargets[G.subject] = +b.dataset.v; save(); renderGradeTarget(m); }));
+    $('#tg-custom', box).addEventListener('change', (ev) => {
+      const v = +ev.target.value;
+      if (v > 0 && v <= 100) { D.gradeTargets[G.subject] = v; save(); renderGradeTarget(m); }
+    });
+  }
+
+  // settings card: grading scale and its cut-offs
+  function renderGradingSettings() {
+    const sel = $('#set-scale');
+    sel.innerHTML = Object.entries(SCALES).map(([k, s]) => `<option value="${k}"${k === D.grading.scale ? ' selected' : ''}>${s.name}</option>`).join('');
+    const grades = scaleGrades();
+    $('#set-cuts').innerHTML = grades.map((g, i) => `<label class="cut" style="--gc:${gradeColor(g)};--i:${i}"><span class="gtag" style="--gc:${gradeColor(g)}">${esc(g.l)}</span>${i === grades.length - 1 ? '<span class="muted">below</span>' : `<span class="suffix-in sm"><input type="number" class="input" data-l="${esc(g.l)}" min="1" max="100" step="0.5" value="${g.min}"><b>%</b></span>`}</label>`).join('');
+    $$('#set-cuts input').forEach((inp) => inp.addEventListener('change', () => {
+      const v = +inp.value;
+      const gs = scaleGrades(), i = gs.findIndex((g) => g.l === inp.dataset.l);
+      const above = i > 0 ? gs[i - 1].min : 101, below = i < gs.length - 2 ? gs[i + 1].min : 0;
+      if (!(v > 0 && v <= 100) || v >= above || v <= below) {
+        toast(`${esc(inp.dataset.l)} has to be between ${below}% and ${Math.min(100, above)}%`);
+        renderGradingSettings();
+        return;
+      }
+      D.grading.cuts = D.grading.cuts || {};
+      const cur = D.grading.cuts[D.grading.scale] = D.grading.cuts[D.grading.scale] || {};
+      cur[inp.dataset.l] = v;
+      save();
+      renderGradingSettings();
+    }));
+  }
+
   // ---------------- tutorial ----------------
   const TOUR = [
     { sel: null, title: 'Welcome to Study Tracker', text: 'Here\'s a quick tour of how it works. It takes about 30 seconds.' },
@@ -1791,8 +2357,11 @@
     { sel: '.controls', title: 'Start the stopwatch', text: 'Start and pause as you need. Stop saves the session. Cancel throws it away. The space bar also starts and pauses.' },
     { sel: '.tree-card', title: 'Your forest and your tree', text: 'Before you start, this shows your forest for the week: one tree per session. Hover over a tree for its details, and use the arrows to see earlier weeks. Once you start, your new tree grows here. At 10 minutes it takes root and earns 10 coins, then 1 coin for every extra minute, plus a 5 coin bonus at each full hour. Cancel before 10 minutes and it dies.' },
     { sel: '.nav-item[data-page="stats"]', title: 'Stats', text: 'Pie and bar charts for any day, week, month or year.' },
+    { sel: '.nav-item[data-page="calendar"]', title: 'Calendar', text: 'Put in your tests, exams and assignments. Once one is done, add your grade and its weight.' },
+    { sel: '.nav-item[data-page="grades"]', title: 'Grades', text: 'Pick a subject to see your average, and what you need on the rest to get the grade you want.' },
     { sel: '.nav-item[data-page="garden"]', title: 'Garden', text: 'Every tree that took root is planted here.' },
     { sel: '.nav-item[data-page="trees"]', title: 'Trees', text: 'Spend coins on cases to unlock new trees. Pricier cases have rarer trees. Duplicates give some coins back.' },
+    { sel: '.nav-item[data-page="badges"]', title: 'Badges', text: 'Earn badges as you study. Each one has a reward to claim: coins, or free cases for the big ones.' },
     { sel: '.nav-item[data-page="history"]', title: 'History', text: 'Every past session with its tree. You can delete sessions here, including withered and cancelled ones.' },
     { sel: '.nav-item[data-page="settings"]', title: 'Settings', text: 'Change subjects, mark finished ones, switch themes, and back up your data.' },
     { sel: '#coin-pill', title: 'Your coins', text: 'Your coin total is always up here. That\'s everything. Happy studying!' },
@@ -1904,6 +2473,7 @@
     $('#set-automini').classList.toggle('on', !!D.profile.autoMini);
     renderThemeGrid($('#set-themes'));
     renderSubjectSettings();
+    renderGradingSettings();
   }
   const ARCHIVE_ICON = '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4"/></svg>';
   const RESTORE_ICON = '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>';
@@ -1948,6 +2518,10 @@
         s.name = v;
         D.sessions.forEach((x) => { if (x.subject === old) x.subject = v; });
         D.trees.forEach((x) => { if (x.subject === old) x.subject = v; });
+        D.events.forEach((x) => { if (x.subject === old) x.subject = v; });
+        if (D.gradeExtras[old]) { D.gradeExtras[v] = D.gradeExtras[old]; delete D.gradeExtras[old]; }
+        if (D.gradeTargets[old] != null) { D.gradeTargets[v] = D.gradeTargets[old]; delete D.gradeTargets[old]; }
+        if (G.subject === old) G.subject = v;
         if (D.active && D.active.subject === old) D.active.subject = v;
         if (T.subject === old) T.subject = v;
         save();
@@ -2087,6 +2661,13 @@
       D.collection.opened = Math.max(D.collection.opened || 0, backup.collection.opened || 0);
       for (const [id, at] of Object.entries(backup.achievements || {})) if (!D.achievements[id] || at < D.achievements[id]) D.achievements[id] = at;
       backup.favTrees.forEach((id) => { if (!D.favTrees.includes(id)) D.favTrees.push(id); });
+      const ev = new Set(D.events.map((e) => e.id));
+      backup.events.forEach((e) => { if (!ev.has(e.id)) D.events.push(e); });
+      for (const [sname, list] of Object.entries(backup.gradeExtras || {})) {
+        const mine = D.gradeExtras[sname] = D.gradeExtras[sname] || [];
+        (Array.isArray(list) ? list : []).forEach((x) => { if (x && !mine.some((y) => y.id === x.id)) mine.push(x); });
+      }
+      for (const [id, at] of Object.entries(backup.badgeClaims || {})) if (!D.badgeClaims[id]) D.badgeClaims[id] = at;
       if (!hadSetup) { D.profile = Object.assign(D.profile, backup.profile, { setupDone: false }); }
       D.active = keepActive;
       return { added, skipped: backup.sessions.length - added, total: backup.sessions.length };
@@ -2201,11 +2782,13 @@
       document.body.classList.remove('onboarding');
       enterApp();
       if (!D.profile.tutorialSeen) setTimeout(startTour, 900);
+      showGiftNotice();
     }, 650);
   }
 
   function enterApp() {
     renderCoins(true);
+    updateNavDots();
     const pg = $(`#page-${currentPage}`);
     renderPage(currentPage);
     pg.classList.remove('enter'); void pg.offsetWidth; pg.classList.add('enter');
@@ -2236,7 +2819,7 @@
       }
       if (e.target.matches('input, select, textarea') || $('.modal-back') || !$('#onboarding').classList.contains('hidden') || !$('#case-overlay').classList.contains('hidden')) return;
       if (e.code === 'Space' && currentPage === 'timer') { e.preventDefault(); start(); }
-      if (e.ctrlKey && e.key >= '1' && e.key <= '6') go(['timer', 'stats', 'garden', 'trees', 'history', 'settings'][+e.key - 1]);
+      if (e.ctrlKey && e.key >= '1' && e.key <= '9') go(['timer', 'stats', 'calendar', 'grades', 'garden', 'trees', 'badges', 'history', 'settings'][+e.key - 1]);
     });
 
     // stats
@@ -2268,6 +2851,15 @@
     });
     $('#m-close').addEventListener('click', () => $('#manual-card').classList.add('collapsed'));
     $('#m-save').addEventListener('click', saveManual);
+
+    $('#bd-claim-all').addEventListener('click', claimAll);
+    // calendar + grades
+    $('#cal-prev').addEventListener('click', () => { CAL.month = new Date(CAL.month.getFullYear(), CAL.month.getMonth() - 1, 1); renderCalendar(-1); });
+    $('#cal-next-m').addEventListener('click', () => { CAL.month = new Date(CAL.month.getFullYear(), CAL.month.getMonth() + 1, 1); renderCalendar(1); });
+    $('#cal-today').addEventListener('click', () => { const n = new Date(), m = new Date(n.getFullYear(), n.getMonth(), 1); const dir = Math.sign(m - CAL.month); CAL.month = m; CAL.sel = todayKey(); renderCalendar(dir); });
+    $('#cal-add').addEventListener('click', () => openEventModal(null, CAL.sel && CAL.sel >= todayKey() ? CAL.sel : todayKey()));
+    $('#set-scale').addEventListener('change', () => { D.grading.scale = $('#set-scale').value; save(); renderGradingSettings(); toast(`Grades now use ${SCALES[D.grading.scale].name}`); });
+    $('#set-cuts-reset').addEventListener('click', () => { if (D.grading.cuts) delete D.grading.cuts[D.grading.scale]; save(); renderGradingSettings(); });
 
     // settings
     $('#set-name').addEventListener('change', () => { D.profile.name = $('#set-name').value.trim(); save(); });
@@ -2422,6 +3014,7 @@
       else {
         enterApp();
         if (D.active) toast('Your last session was paused when the app closed. Press Resume to continue', 4500);
+        if (!readOnly) showGiftNotice();
         // say so once after the app has updated itself
         if (prevVersion && prevVersion !== APP_VERSION && !readOnly) setTimeout(() => toast(`✨ Updated to version ${esc(APP_VERSION)}`, 4200), 900);
         if (!D.profile.tutorialSeen && !D.active) setTimeout(startTour, 1100);
