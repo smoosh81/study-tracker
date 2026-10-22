@@ -10,7 +10,8 @@ Your saves live in `%APPDATA%\Study Tracker` and are never touched by updates.
 
 ## Releasing an update
 
-1. Bump `version` in `package.json`.
-2. Build: `npx electron-builder --win dir --x64` (on Linux this needs wine).
-3. Pack: `node build/make-release.js "what changed"` makes `release/X.Y.Z/` with the zip, `app-X.Y.Z.asar` and `latest.json`.
-4. Create a GitHub release tagged `vX.Y.Z` with those three files attached. Installed apps pick it up on their next launch.
+1. Bump `version` in `package.json` and write what changed in `RELEASE_NOTES.md`.
+2. Push to `main`. The Release workflow builds the app on Windows and publishes a GitHub release tagged `vX.Y.Z` with the portable zip, `app-X.Y.Z.asar` and `latest.json`.
+3. Installed apps pick it up on their next launch and install it when they close.
+
+To build locally instead: `npx electron-builder --win dir --x64` (on Linux this needs wine), then `node build/make-release.js "notes"`.

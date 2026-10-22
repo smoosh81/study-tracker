@@ -22,7 +22,8 @@ fs.rmSync(stage, { recursive: true, force: true });
 fs.mkdirSync(stage, { recursive: true });
 fs.cpSync(unpacked, path.join(stage, 'Study Tracker'), { recursive: true });
 const zipName = `Study-Tracker-Portable-${v}.zip`;
-execFileSync('zip', ['-qr9', path.join(out, zipName), 'Study Tracker'], { cwd: stage });
+if (process.platform === 'win32') execFileSync('7z', ['a', '-tzip', '-mx=9', path.join(out, zipName), 'Study Tracker'], { cwd: stage, stdio: 'ignore' });
+else execFileSync('zip', ['-qr9', path.join(out, zipName), 'Study Tracker'], { cwd: stage });
 const asarName = `app-${v}.asar`;
 fs.copyFileSync(path.join(unpacked, 'resources', 'app.asar'), path.join(out, asarName));
 

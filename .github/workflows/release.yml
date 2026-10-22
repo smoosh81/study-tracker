@@ -1,0 +1,72 @@
+# Builds the Windows app and publishes a GitHub release whenever the version in
+# package.json changes on main. Installed copies of Study Tracker read latest.json
+# from the newest release and update themselves.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: [package.json]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Read version
+        id: v
+        shell: bash
+        run: |
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if this version is already released
+        id: exists
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.v.outputs.version }}" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "v${{ steps.v.outputs.version }} already exists, nothing to do"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install
+        if: steps.exists.outputs.skip == 'false'
+        run: npm ci --no-audit --no-fund
+
+      - name: Build
+        if: steps.exists.outputs.skip == 'false'
+        run: npx electron-builder --win dir --x64
+
+      - name: Pack release files
+        if: steps.exists.outputs.skip == 'false'
+        shell: bash
+        run: node build/make-release.js "$(cat RELEASE_NOTES.md 2>/dev/null || true)"
+
+      - name: Publish release
+        if: steps.exists.outputs.skip == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          NOTES="$(cat RELEASE_NOTES.md 2>/dev/null || true)"
+          printf '%s\n\n**First time?** Download `Study-Tracker-Portable-%s.zip`, unzip it, and run `Study Tracker.exe` inside the `Study Tracker` folder. After that the app updates itself.\n' "$NOTES" "$V" > notes.txt
+          gh release create "v$V" --title "Study Tracker $V" --notes-file notes.txt --latest \
+            "release/$V/Study-Tracker-Portable-$V.zip" "release/$V/app-$V.asar" "release/$V/latest.json"
