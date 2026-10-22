@@ -1119,3 +1119,37 @@ body.is-night .bfly { display: none; }
 .gi-row:hover .gi-move { opacity: 1; }
 #gi-add-exam svg { width: 16px; height: 16px; }
 @media (max-width: 1000px) { .sem-row { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; } .card.sem-card { padding: 10px 12px; gap: 10px; } .sem-ring { width: 54px; height: 54px; } .sem-letter { font-size: 18px; } .sem-info b { font-size: 19px; } }
+
+/* a session's trees light up together */
+.plot .tile { transition: fill .25s; }
+.plot .tile.lit { fill: #fde68a; }
+.plot.hl .pt:not(.lit) { filter: grayscale(.45) brightness(.72); }
+.plot .pt.lit { filter: brightness(1.12) drop-shadow(0 0 5px rgba(255, 244, 200, .95)); }
+.plot .pt.lit:hover { filter: brightness(1.15) drop-shadow(0 0 7px rgba(255, 244, 200, 1)); }
+#garden.hl .garden-tile:not(.lit) { filter: grayscale(.4) brightness(.75); }
+.garden-tile { transition: transform .4s var(--spring), background .3s, filter .3s, box-shadow .3s; }
+.garden-tile.lit { background: rgba(255, 240, 180, .14); box-shadow: inset 0 0 0 2px rgba(253, 230, 138, .65); }
+.sess-row .thumb { position: relative; }
+.tcount { position: absolute; right: -6px; bottom: -2px; font-size: 10px; font-weight: 800; padding: 1px 5px; border-radius: 99px; background: var(--accent); color: var(--on-accent); box-shadow: 0 2px 6px -2px rgba(0, 0, 0, .4); }
+
+/* garden decorations */
+.plot .dc { cursor: pointer; }
+.plot .dc-in { transform-box: fill-box; transform-origin: center bottom; animation: ptIn .7s var(--spring) both; animation-delay: calc(var(--d, 0ms) + 200ms); }
+.plot .dc.boing .dc-in { animation: dcBoing .6s var(--spring); }
+@keyframes dcBoing { 30% { transform: scale(1.15, .88); } 60% { transform: scale(.95, 1.08); } 100% { transform: none; } }
+.lamp-glow { opacity: .5; transition: opacity 1s; }
+body.is-night .lamp-glow { opacity: 1; }
+.decor-wrap { margin-bottom: 18px; }
+.decor-wrap .card-head { flex-wrap: wrap; gap: 4px 12px; }
+.decor-shop { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.decor-card { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 10px 12px; border-radius: 16px; background: var(--surface2); border: 1px solid var(--border); text-align: center; animation: pop .45s var(--spring) both; animation-delay: calc(var(--i) * 40ms); transition: transform .35s var(--spring), border-color .3s; }
+.decor-card:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.decor-card.shake { animation: shake .45s; }
+.decor-card.full { opacity: .75; }
+.decor-prev { width: 84px; height: 84px; overflow: visible; filter: drop-shadow(0 6px 6px rgba(0, 0, 0, .18)); transition: transform .4s var(--spring); }
+.decor-card:hover .decor-prev { transform: scale(1.1) translateY(-2px); }
+.decor-name { font-weight: 700; font-size: 14px; }
+.decor-desc { font-size: 11.5px; color: var(--muted); line-height: 1.35; min-height: 31px; }
+.decor-own { font-size: 11px; color: var(--muted); font-weight: 600; margin-bottom: 4px; }
+.decor-card .btn { min-width: 96px; }
+.decor-card .btn .coin.sm { width: 14px; height: 14px; }

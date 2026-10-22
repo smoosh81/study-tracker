@@ -72,7 +72,7 @@
   // ---------------- data ----------------
   // SCHEMA is the save-file format version. Bump it and add a migration below whenever
   // the save format changes, so older saves are always upgraded instead of lost.
-  const SCHEMA = 8;
+  const SCHEMA = 9;
   const MIGRATIONS = {
     // 1 -> 2 (app 1.0.1): subjects can be archived; coins are counted per 10-minute milestone
     1: (d) => {
@@ -164,6 +164,12 @@
       Object.keys(tg).forEach((k) => { if (typeof tg[k] === 'number') tg[k] = { 1: tg[k], 2: tg[k] }; });
       return `Calendar removed: ${evs.length} calendar item${evs.length === 1 ? '' : 's'} moved into Grades; grades split into Semester 1 and 2`;
     },
+    // 8 -> 9 (app 1.8.0): garden decorations bought with coins. Long sessions now grow more
+    // trees, worked out from each tree's duration, so nothing in the save needs changing for that.
+    8: (d) => {
+      if (!d.decor || typeof d.decor !== 'object') d.decor = {};
+      return 'Added garden decorations; longer sessions grow more trees';
+    },
   };
   let readOnly = false; // true if the save came from a newer version of the app
   function migrate(raw) {
@@ -195,6 +201,7 @@
       badgeClaims: {},
       freeCases: { seed: 1 }, // every new user starts with one free Seed Pouch
       giftNotice: 'welcome',
+      decor: {},
       gradeExtras: {},
       gradeTargets: {},
       grading: { scale: 'school', cuts: {} },
@@ -226,6 +233,7 @@
     out.withered = +x.withered || 0;
     const obj = (v) => v && typeof v === 'object' && !Array.isArray(v);
     out.badgeClaims = obj(x.badgeClaims) ? x.badgeClaims : {};
+    out.decor = obj(x.decor) ? x.decor : {};
     out.freeCases = obj(x.freeCases) ? x.freeCases : {};
     out.gradeExtras = obj(x.gradeExtras) ? x.gradeExtras : {};
     for (const [k, list] of Object.entries(out.gradeExtras)) {
@@ -274,7 +282,13 @@
   }
   // a session's tree: the one it grew, or for older/manual sessions a plain oak
   const treeOfSession = (s) => s.tree || 'oak';
+  // A session grows one tree for every full 30 minutes: 1 once it takes root, 2 at an hour, 4 at two hours (12 at most).
+  const TREE_EVERY = 30 * 60;
+  const treesForSec = (sec) => Math.min(12, Math.max(1, Math.floor((sec || 0) / TREE_EVERY)));
+  const treeCountOf = (t) => treesForSec(t.duration);
+  const totalTrees = () => D.trees.reduce((a, t) => a + treeCountOf(t), 0);
   const isWithered = (s) => s.outcome ? s.outcome === 'withered' : s.duration < ROOT_SEC;
+  const sessionTrees = (s) => (isWithered(s) ? 1 : treesForSec(s.duration));
   // the garden's withered count comes straight from history, so deleting a session updates it
   const witheredCount = () => D.sessions.filter(isWithered).length;
   // static (non-animated) tree markup for lists; call paintTrees(container) after inserting
@@ -438,7 +452,7 @@
   // Pages are rebuilt every time you open them, so the big ones (hundreds of tree drawings)
   // are emptied once you leave. This keeps memory down without changing what you see.
   const HEAVY = {
-    timer: ['#week-plot'], stats: ['#stats-plot'], garden: ['#garden', '#garden-plot'],
+    timer: ['#week-plot'], stats: ['#stats-plot'], garden: ['#garden', '#garden-plot', '#decor-shop'],
     trees: ['#collection', '#cases'], badges: ['#badge-cats'], history: ['#history-list'],
     grades: ['#gr-body', '#gr-chips'],
   };
@@ -747,8 +761,10 @@
       if (sec < 20) setTreeStatus(T.state === 'paused' ? 'Paused. Your seed is waiting' : 'A seed has been planted');
       else if (sec < ROOT_SEC * 0.4) setTreeStatus(T.state === 'paused' ? 'Paused. Your sprout is waiting' : 'Sprouting...');
       else if (sec < ROOT_SEC) setTreeStatus(T.state === 'paused' ? 'Paused. Your sapling is waiting' : 'Your sapling is growing');
-      else if (sec < 3600) setTreeStatus('Rooted in your garden. Keep going to help it grow');
-      else setTreeStatus('A mighty tree. Look at it go');
+      else {
+        const n = treesForSec(sec), next = Math.ceil(((n + 1) * TREE_EVERY - sec) / 60) * 60;
+        setTreeStatus(`${n} tree${n === 1 ? '' : 's'} in your garden${n < 12 ? ` · another in ${fmtDur(next)}` : ' · a whole grove!'}`);
+      }
     }
     checkMilestones(sec);
     updateTodayHeader();
@@ -758,6 +774,20 @@
   function checkMilestones(sec) {
     const a = D.active;
     if (!a || T.state === 'idle') return;
+    // every 30 minutes past the first, the session plants another tree
+    if (a.rooted && treesForSec(sec) > (a.trees || 1)) {
+      a.trees = treesForSec(sec);
+      const t = D.trees.find((x) => x.id === a.treeId);
+      if (t) t.duration = Math.floor(sec);
+      if (currentPage === 'timer' && !document.hidden) {
+        const r = $('#tree-holder').getBoundingClientRect();
+        burst(r.left + r.width / 2, r.top + r.height * 0.4, { n: 45, up: true, speed: 7 });
+        treeSvg.classList.remove('celebrate'); void treeSvg.getBBox(); treeSvg.classList.add('celebrate');
+      }
+      toast(`🌳 Another tree! This session has grown ${a.trees} trees`);
+      save();
+      checkAchievements();
+    }
     const target = coinsFor(sec, a.species);
     if (target <= (a.coins || 0)) {
       if (a.rooted) { const t = D.trees.find((x) => x.id === a.treeId); if (t) t.duration = Math.floor(sec); }
@@ -774,6 +804,7 @@
     const onTimer = currentPage === 'timer' && !document.hidden;
     if (!a.rooted) {
       a.rooted = true;
+      a.trees = 1;
       D.trees.push({ id: a.treeId, species: a.species, subject: a.subject, date: a.startedAt, duration: Math.floor(sec), sessionId: a.sessionId });
       if (onTimer) {
         const r = holder.getBoundingClientRect();
@@ -882,7 +913,7 @@
     const rooted = D.active.rooted;
     const ok = await modal({
       title: 'Finish this session?',
-      body: rooted ? `You studied ${D.active.subject} for ${fmtDur(sec)}. It'll be saved and your tree stays in your garden.`
+      body: rooted ? `You studied ${D.active.subject} for ${fmtDur(sec)}. It'll be saved and ${treesForSec(sec) === 1 ? 'your tree stays' : `your ${treesForSec(sec)} trees stay`} in your garden.`
         : `You studied ${D.active.subject} for ${fmtDur(sec)}. The time will be saved, but your sapling needed 10 minutes to take root, so it will wither.`,
       actions: [{ label: 'Keep studying', ghost: true, value: false }, { label: 'Finish & save', primary: true, value: true }],
     });
@@ -896,7 +927,8 @@
       const r = $('#tree-holder').getBoundingClientRect();
       burst(r.left + r.width / 2, r.top + r.height * 0.4, { n: 50, up: true, speed: 7, colors: ['#fde047', '#fbbf24', '#ffffff', colorOf(a.subject)] });
       setTreeStatus('Planted in your garden');
-      toast(`Saved ${fmtDur(total)} of ${esc(a.subject)}. Your tree is in the garden 🌳`);
+      const n = treesForSec(total);
+      toast(`Saved ${fmtDur(total)} of ${esc(a.subject)}. ${n === 1 ? 'Your tree is' : `Your ${n} trees are`} in the garden 🌳`);
     } else {
       witherTree();
       setTreeStatus('Your sapling withered. Stay 10 minutes next time');
@@ -1018,7 +1050,7 @@
     const w = isWithered(s);
     const tag = s.cancelled ? '<span class="tag cancel">Cancelled</span>' : w ? '<span class="tag dead">Withered</span>' : '';
     return `<div class="sess-row with-tree${s.cancelled ? ' is-cancelled' : ''}" style="--c:${colorOf(s.subject)};--i:${i}" data-id="${s.id}">
-      <span class="thumb">${staticTree(treeOfSession(s), s.duration, w, 'h' + s.id)}</span><span class="nm"><i class="dot"></i>${esc(s.subject)}${tag}${s.coins ? `<span class="tag coins"><span class="coin sm"></span>${s.coins}</span>` : ''}</span>
+      <span class="thumb">${staticTree(treeOfSession(s), s.duration, w, 'h' + s.id)}${!w && !s.cancelled && sessionTrees(s) > 1 ? `<b class="tcount">×${sessionTrees(s)}</b>` : ''}</span><span class="nm"><i class="dot"></i>${esc(s.subject)}${tag}${s.coins ? `<span class="tag coins"><span class="coin sm"></span>${s.coins}</span>` : ''}</span>
       <span class="t">${fmtTime(d)} – ${fmtTime(end)}</span>
       <span class="d">${fmtDur(s.duration)}${opts.del !== false ? `<button class="del" title="Delete session">${XICON}</button>` : ''}</span></div>`;
   }
@@ -1061,32 +1093,74 @@
       <div class="tt-row"><span>Date</span><b>${d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</b></div>
       <div class="tt-row"><span>Time</span><b>${fmtTime(d)} – ${fmtTime(en)}</b></div>
       <div class="tt-row"><span>Duration</span><b>${fmtDur(x.duration)}</b></div>
+      <div class="tt-row"><span>Trees</span><b>${isWithered(x) ? '1 withered' : sessionTrees(x)}</b></div>
       <div class="tt-row"><span>Tree</span><b>${x.tree ? esc(sp.name) : 'Oak (older session)'}</b></div>
       <div class="tt-row"><span>Subject</span><b><i style="--c:${colorOf(x.subject)}"></i>${esc(x.subject)}</b></div>
       ${isWithered(x) || x.coins ? `<div class="tt-row"><span>Result</span><b>${state}${x.coins ? ` · +${x.coins} coins` : ''}</b></div>` : ''}`;
   }
+  // Put each session's trees on neighbouring cells. Sessions start at scattered cells and spread
+  // out from there (breadth first), so one session's trees always sit together.
+  function placeClusters(n, items, tilesOf, seed, loose) {
+    const order = [];
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) order.push([i, j]);
+    order.sort((a, b) => hashStr(seed + a) - hashStr(seed + b));
+    const used = new Uint8Array(n * n);
+    const placed = [];
+    let ptr = 0;
+    for (const x of items) {
+      const want = tilesOf(x);
+      let got = 0;
+      while (got < want) {
+        while (ptr < order.length && used[order[ptr][0] * n + order[ptr][1]]) ptr++;
+        if (ptr >= order.length) return null;
+        const queue = [order[ptr]];
+        while (queue.length && got < want) {
+          const [i, j] = queue.shift();
+          if (used[i * n + j]) continue;
+          used[i * n + j] = 1;
+          placed.push({ x, cell: [i, j], k: got++ });
+          const nb = [[i + 1, j], [i, j + 1], [i - 1, j], [i, j - 1]].filter(([a, b]) => a >= 0 && b >= 0 && a < n && b < n && !used[a * n + b]);
+          nb.sort((p, q) => hashStr(seed + x.id + p) - hashStr(seed + x.id + q));
+          queue.push(...nb);
+        }
+        if (got < want && !loose) return null; // boxed in: try a bigger plot
+      }
+    }
+    return { placed, empties: order.filter(([i, j]) => !used[i * n + j]) };
+  }
   function renderPlot(host, list, opts = {}) {
-    const shown = list.length > PLOT_MAX ? list.slice(-PLOT_MAX) : list;
-    const n = Math.max(opts.min || 4, Math.ceil(Math.sqrt(shown.length * 1.15)));
+    const tilesOf = opts.count || (() => 1);
+    // newest sessions first until the plot is full
+    const shown = [];
+    let need = 0;
+    for (let k = list.length - 1; k >= 0; k--) {
+      const c = tilesOf(list[k]);
+      if (need + c > PLOT_MAX && shown.length) break;
+      shown.unshift(list[k]);
+      need += c;
+    }
+    const decor = opts.decor || [];
+    const seed = opts.seed || 'plot';
+    let n = Math.max(opts.min || 4, Math.ceil(Math.sqrt((need + decor.length) * 1.25)));
+    let res = null;
+    for (let tries = 0; !res; tries++, n++) res = placeClusters(n, shown, tilesOf, seed, tries >= 5);
+    n--;
+    const { placed, empties } = res;
     const TW = 64, TH = 32, DEPTH = 26, TREE_W = 58, TREE_H = 72;
     const W = n * TW, top = TREE_H - 8, H = top + n * TH + DEPTH + 6;
     const cx0 = W / 2;
     const pos = (i, j) => [cx0 + (i - j) * TW / 2, top + (i + j + 1) * TH / 2];
-    // scatter sessions over the cells in a stable order
-    const cells = [];
-    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) cells.push([i, j]);
-    const seed = opts.seed || 'plot';
-    cells.sort((a, b) => hashStr(seed + a) - hashStr(seed + b));
-    const placed = shown.map((x, k) => ({ x, cell: cells[k] }));
-    const empties = cells.slice(shown.length);
+    const owner = new Map(placed.map((p) => [p.cell[0] * n + p.cell[1], p.x.id]));
     let tiles = '';
     for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
       const [x, y] = pos(i, j);
-      tiles += `<polygon points="${x},${y - TH / 2} ${x + TW / 2},${y} ${x},${y + TH / 2} ${x - TW / 2},${y}" class="tile ${(i + j) % 2 ? 't1' : 't2'}"/>`;
+      const o = owner.get(i * n + j);
+      tiles += `<polygon points="${x},${y - TH / 2} ${x + TW / 2},${y} ${x},${y + TH / 2} ${x - TW / 2},${y}" class="tile ${(i + j) % 2 ? 't1' : 't2'}"${o != null ? ` data-id="${o}"` : ''}/>`;
     }
-    // little flowers and grass tufts on empty cells
+    // bought decorations take the first free cells; the rest get the odd flower or grass tuft
+    const decorCells = empties.slice(0, decor.length);
     let deco = '';
-    empties.forEach(([i, j], k) => {
+    empties.slice(decor.length).forEach(([i, j]) => {
       const h = hashStr(seed + 'd' + i + ',' + j);
       if (h % 3) return;
       const [x, y] = pos(i, j);
@@ -1094,9 +1168,15 @@
       deco += h % 2 ? `<g class="deco" transform="translate(${x + ox},${y + oy})"><path d="M-4 0 q2 -7 1 -9 M0 0 q0 -8 1 -10 M4 0 q-1 -6 0 -8" class="tuft"/></g>`
         : `<g class="deco" transform="translate(${x + ox},${y + oy})"><circle r="2.6" cy="-3" fill="${['#fde047', '#f9a8d4', '#ffffff', '#c4b5fd'][h % 4]}"/><circle r="1.1" cy="-3" fill="#f59e0b"/></g>`;
     });
-    const trees = placed.slice().sort((a, b) => (a.cell[0] + a.cell[1]) - (b.cell[0] + b.cell[1]) || a.cell[0] - b.cell[0]).map(({ x, cell }, k) => {
-      const [px, py] = pos(cell[0], cell[1]);
-      const svg = window.Tree.build(treeOfSession(x), (opts.key || 'p') + x.id)
+    // trees and decorations are drawn back to front together
+    const items = placed.map((p) => ({ cell: p.cell, tree: p }))
+      .concat(decorCells.map((cell, k) => ({ cell, decor: decor[k] })))
+      .sort((a, b) => (a.cell[0] + a.cell[1]) - (b.cell[0] + b.cell[1]) || a.cell[0] - b.cell[0]);
+    const drawn = items.map((it, k) => {
+      const [px, py] = pos(it.cell[0], it.cell[1]);
+      if (it.decor) return `<g class="dc" data-d="${it.decor}" transform="translate(${px},${py})" style="--d:${Math.min(k, 120) * 14}ms"><g class="dc-in">${decorSvg(it.decor)}</g></g>`;
+      const { x, k: nth } = it.tree;
+      const svg = window.Tree.build(treeOfSession(x), (opts.key || 'p') + x.id + '_' + nth)
         .replace('<svg class="tree', `<svg x="${px - TREE_W / 2}" y="${py - TREE_H + 6}" width="${TREE_W}" height="${TREE_H}" data-sec="${Math.round(x.duration)}"${isWithered(x) ? ' data-withered="1"' : ''} data-fixed="1" class="tree static`)
         .replace('viewBox="0 0 200 240"', 'viewBox="14 0 172 220"');
       return `<g class="pt" data-id="${x.id}" style="--d:${Math.min(k, 120) * 14}ms">${svg}</g>`;
@@ -1107,16 +1187,93 @@
       <polygon points="${W},${y0} ${cx0},${yb} ${cx0},${yb + DEPTH} ${W},${y0 + DEPTH}" class="side-r"/>
       <polygon points="0,${y0} ${cx0},${yb} ${cx0},${yb + 6} 0,${y0 + 6}" class="lip-l"/>
       <polygon points="${W},${y0} ${cx0},${yb} ${cx0},${yb + 6} ${W},${y0 + 6}" class="lip-r"/>
-      <g class="tiles">${tiles}</g><g>${deco}</g><g class="trees">${trees}</g></svg>`;
+      <g class="tiles">${tiles}</g><g>${deco}</g><g class="trees">${drawn}</g></svg>`;
     paintTrees(host);
+    const plot = $('.plot', host);
     const byId = new Map(shown.map((x) => [String(x.id), x]));
+    // hovering any tree lights up every tree from that session and shows the session's totals
+    const light = (id, on) => {
+      plot.classList.toggle('hl', on);
+      $$(`.pt[data-id="${CSS.escape(id)}"], .tile[data-id="${CSS.escape(id)}"]`, plot).forEach((el) => el.classList.toggle('lit', on));
+    };
     $$('.pt', host).forEach((g) => {
       const x = byId.get(g.dataset.id);
-      g.addEventListener('mouseenter', (ev) => showTip(sessionTip(x), ev));
+      g.addEventListener('mouseenter', (ev) => { light(g.dataset.id, true); showTip(sessionTip(x), ev); });
+      g.addEventListener('mousemove', moveTip);
+      g.addEventListener('mouseleave', () => { light(g.dataset.id, false); hideTip(); });
+    });
+    $$('.dc', host).forEach((g) => {
+      const d = DECOR.find((x) => x.id === g.dataset.d);
+      g.addEventListener('mouseenter', (ev) => showTip(`<div class="tt-title">${esc(d.name)}</div><div class="muted">${esc(d.desc)}</div>`, ev));
       g.addEventListener('mousemove', moveTip);
       g.addEventListener('mouseleave', hideTip);
+      g.addEventListener('click', () => { const r = g.getBoundingClientRect(); burst(r.left + r.width / 2, r.top + r.height / 3, { n: 12, speed: 3, leaf: false, colors: ['#ffffff', '#fde68a', '#86efac'] }); g.classList.remove('boing'); void g.getBBox(); g.classList.add('boing'); });
     });
     return { shown: shown.length, total: list.length };
+  }
+
+  // ---- garden decorations: bought with coins, purely for looks ----
+  const DECOR = [
+    { id: 'flowers', name: 'Flower bed', desc: 'A splash of colour between your trees.', price: 60, max: 8 },
+    { id: 'mushrooms', name: 'Mushroom ring', desc: 'Little red toadstools.', price: 80, max: 6 },
+    { id: 'rocks', name: 'Mossy rocks', desc: 'Old stones with moss on top.', price: 90, max: 6 },
+    { id: 'bench', name: 'Garden bench', desc: 'Somewhere to sit and admire it all.', price: 180, max: 4 },
+    { id: 'lantern', name: 'Lantern', desc: 'Glows softly, and brighter at night.', price: 260, max: 6 },
+    { id: 'birdhouse', name: 'Birdhouse', desc: 'A home for the garden birds.', price: 320, max: 4 },
+    { id: 'pond', name: 'Lily pond', desc: 'Still water with a lily in bloom.', price: 450, max: 3 },
+    { id: 'fountain', name: 'Fountain', desc: 'A stone fountain that never stops.', price: 850, max: 2 },
+    { id: 'windmill', name: 'Windmill', desc: 'The centrepiece. Its sails turn all day.', price: 1500, max: 1 },
+  ];
+  // drawn around the middle of a tile (0, 0); a tile is 64 wide and 32 tall
+  function decorSvg(id) {
+    switch (id) {
+      case 'flowers': return [[-12, 0, '#f9a8d4'], [-5, -4, '#fde047'], [3, -2, '#c4b5fd'], [10, 1, '#ffffff'], [-6, 4, '#fb7185'], [5, 5, '#fdba74'], [-1, 1, '#f0abfc']]
+        .map(([x, y, c]) => `<path d="M${x} ${y} q1 -4 0 -7" stroke="#4d8f3a" stroke-width="1.3" fill="none"/><circle cx="${x}" cy="${y - 8}" r="2.8" fill="${c}"/><circle cx="${x}" cy="${y - 8}" r="1" fill="#f59e0b"/>`).join('');
+      case 'mushrooms': return [[-10, 3, 1], [3, -3, 0.8], [11, 4, 1.15]]
+        .map(([x, y, s]) => `<g transform="translate(${x},${y}) scale(${s})"><rect x="-1.8" y="-7" width="3.6" height="7" rx="1.4" fill="#f5efe2"/><path d="M-6 -6 a6 5 0 0 1 12 0 z" fill="#ef4444"/><circle cx="-2.4" cy="-8.5" r="1" fill="#fff"/><circle cx="2" cy="-9.6" r=".9" fill="#fff"/><circle cx="3.4" cy="-7.2" r=".7" fill="#fff"/></g>`).join('');
+      case 'rocks': return '<path d="M-16 3 L-12 -7 L-3 -10 L4 -3 L1 5 Z" fill="#94a3b8"/><path d="M-12 -7 L-3 -10 L4 -3 L-4 -4 Z" fill="#cbd5e1"/><ellipse cx="-6" cy="-8" rx="5" ry="2" fill="#6fb54f"/><path d="M5 5 L8 -2 L14 -3 L17 3 L12 7 Z" fill="#8b98aa"/><path d="M8 -2 L14 -3 L13 1 Z" fill="#b8c2d0"/>';
+      case 'bench': return '<path d="M-14 -1 v6 M10 -9 v6 M-6 3 v5 M17 -5 v5" stroke="#6b4628" stroke-width="2.2"/><path d="M-15 -2 L10 -12 L18 -8 L-7 2 Z" fill="#b07a45"/><path d="M-15 -2 L10 -12 L10 -20 L-15 -10 Z" fill="#94643a"/><path d="M-15 -6 L10 -16" stroke="#7a5230" stroke-width="1"/>';
+      case 'lantern': return '<g class="lamp-glow"><circle cy="-36" r="15" fill="#fde68a" opacity=".3"><animate attributeName="r" values="13;16;13" dur="3s" repeatCount="indefinite"/></circle></g><rect x="-1.6" y="-32" width="3.2" height="33" rx="1" fill="#334155"/><rect x="-5" y="-42" width="10" height="11" rx="2.5" fill="#fef3c7" stroke="#334155" stroke-width="1.4"/><path d="M-6 -42 L0 -47 L6 -42 Z" fill="#334155"/><ellipse cy="1" rx="5" ry="2" fill="rgba(0,0,0,.15)"/>';
+      case 'birdhouse': return '<rect x="-1.6" y="-24" width="3.2" height="25" fill="#7a5230"/><rect x="-7" y="-36" width="14" height="13" rx="1.5" fill="#f59e0b"/><path d="M-9 -35 L0 -43 L9 -35 Z" fill="#dc2626"/><circle cy="-30" r="2.6" fill="#3b2412"/><rect x="-3" y="-25.5" width="6" height="1.4" fill="#7a5230"/>';
+      case 'pond': return '<ellipse rx="27" ry="13" fill="#7c8a96"/><ellipse rx="24" ry="11" cy="-.5" fill="#38bdf8"/><ellipse rx="15" ry="5" cx="-5" cy="-3" fill="#7dd3fc" opacity=".7"><animate attributeName="rx" values="13;16;13" dur="4s" repeatCount="indefinite"/></ellipse><path d="M6 2 a5 3 0 1 0 6 -3 l-3 2 z" fill="#4ade80"/><circle cx="9" cy="-1" r="2.2" fill="#f9a8d4"/><circle cx="-11" cy="3" r="2.8" fill="#22c55e"/>';
+      case 'fountain': return '<ellipse rx="22" ry="10" fill="#94a3b8"/><ellipse rx="19" ry="8" cy="-2" fill="#cbd5e1"/><ellipse rx="16" ry="6" cy="-2" fill="#38bdf8"/><rect x="-2.5" y="-20" width="5" height="18" fill="#cbd5e1"/><ellipse rx="9" ry="3.6" cy="-20" fill="#e2e8f0"/><ellipse rx="7" ry="2.4" cy="-20.5" fill="#7dd3fc"/>'
+        + [[-5, 0], [5, 0.4], [0, 0.8]].map(([x, d]) => `<circle cx="${x}" r="1.3" fill="#bae6fd"><animate attributeName="cy" values="-22;-28;-6" dur="1.2s" begin="${d}s" repeatCount="indefinite"/><animate attributeName="opacity" values="1;1;0" dur="1.2s" begin="${d}s" repeatCount="indefinite"/></circle>`).join('');
+      case 'windmill': return '<ellipse cy="1" rx="12" ry="4" fill="rgba(0,0,0,.15)"/><path d="M-9 0 L-5 -38 L5 -38 L9 0 Z" fill="#f5efe2"/><path d="M-9 0 L-5 -38 L-2 -38 L-4 0 Z" fill="#e2d8c3"/><path d="M-7 -38 L0 -48 L7 -38 Z" fill="#b45309"/><path d="M-2.5 0 v-7 a2.5 2.5 0 0 1 5 0 v7 z" fill="#7a5230"/><circle cy="-22" r="2.2" fill="#93c5fd"/>'
+        + '<g transform="translate(0,-40)"><g><animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="9s" repeatCount="indefinite"/>'
+        + [0, 90, 180, 270].map((a) => `<g transform="rotate(${a})"><rect x="-1" y="-22" width="2" height="22" fill="#7a5230"/><rect x="1" y="-21" width="6" height="15" fill="#fef3c7" stroke="#a16207" stroke-width=".6"/></g>`).join('')
+        + '<circle r="2.4" fill="#7a5230"/></g></g>';
+      default: return '';
+    }
+  }
+  const decorList = () => DECOR.flatMap((d) => Array(Math.max(0, Math.min(d.max, D.decor[d.id] || 0))).fill(d.id));
+  function renderDecorShop() {
+    const host = $('#decor-shop');
+    if (!host) return;
+    host.innerHTML = DECOR.map((d, i) => {
+      const own = D.decor[d.id] || 0, full = own >= d.max, poor = D.coins < d.price;
+      return `<div class="decor-card${full ? ' full' : ''}" style="--i:${i}" data-d="${d.id}">
+        <svg class="decor-prev" viewBox="-36 -62 72 74">${decorSvg(d.id)}</svg>
+        <div class="decor-name">${esc(d.name)}</div>
+        <div class="decor-desc">${esc(d.desc)}</div>
+        <div class="decor-own">${own ? `${own} in your garden` : 'Not bought yet'}${d.max > 1 ? ` · up to ${d.max}` : ''}</div>
+        <button class="btn small${full ? '' : ' primary'}"${full || poor ? ' disabled' : ''}>${full ? 'All placed' : `<span class="coin sm"></span>${d.price.toLocaleString()}`}</button>
+      </div>`;
+    }).join('');
+    $$('.decor-card', host).forEach((c) => $('button', c).addEventListener('click', (e) => {
+      const d = DECOR.find((x) => x.id === c.dataset.d);
+      if ((D.decor[d.id] || 0) >= d.max) return;
+      if (D.coins < d.price) { c.classList.remove('shake'); void c.offsetWidth; c.classList.add('shake'); return toast('Not enough coins yet'); }
+      D.coins -= d.price;
+      D.decor[d.id] = (D.decor[d.id] || 0) + 1;
+      save();
+      renderCoins();
+      const r = e.currentTarget.getBoundingClientRect();
+      burst(r.left + r.width / 2, r.top, { n: 30, up: true, speed: 6, leaf: false, colors: ['#fde047', '#86efac', '#ffffff'] });
+      toast(`${esc(d.name)} added to your garden`);
+      renderDecorShop();
+      renderGardenScene(D.trees.filter((t) => !gardenFilter || t.subject === gardenFilter));
+      setTimeout(() => $('#garden-scene').scrollIntoView({ behavior: 'smooth', block: 'center' }), 250);
+    }));
   }
 
   const W = { offset: 0 };
@@ -1139,9 +1296,9 @@
     $('#week-next').disabled = W.offset === 0;
     const list = sessionsIn(start, end).sort((a, b) => new Date(a.date) - new Date(b.date));
     const total = list.reduce((a, x) => a + x.duration, 0);
-    renderPlot($('#week-plot'), list, { seed: 'w' + dayKey(start), key: 'wk', min: 5 });
+    renderPlot($('#week-plot'), list, { seed: 'w' + dayKey(start), key: 'wk', min: 5, count: sessionTrees });
     if (T.state === 'idle' && $('#stage').classList.contains('show-plot')) {
-      const grown = list.filter((x) => !isWithered(x)).length, dead = list.length - grown;
+      const grown = list.filter((x) => !isWithered(x)).reduce((n, x) => n + sessionTrees(x), 0), dead = list.filter(isWithered).length;
       const when = W.offset === 0 ? 'This week' : W.offset === 1 ? 'Last week' : 'That week';
       setTreeStatus(list.length ? `${when}: ${grown} tree${grown === 1 ? '' : 's'}${dead ? `, ${dead} withered` : ''} · ${fmtDur(total)}` : `${when}: no trees yet. Start the timer to plant one`);
     }
@@ -1331,8 +1488,8 @@
   function renderStatsPlot(list, a) {
     const host = $('#stats-plot');
     const sorted = list.slice().sort((x, y) => new Date(x.date) - new Date(y.date));
-    const r = renderPlot(host, sorted, { seed: S.period + (a ? dayKey(a) : 'all'), key: 'st' + S.period, min: 4 });
-    const grown = sorted.filter((x) => !isWithered(x)).length, dead = sorted.length - grown;
+    const r = renderPlot(host, sorted, { seed: S.period + (a ? dayKey(a) : 'all'), key: 'st' + S.period, min: 4, count: sessionTrees });
+    const grown = sorted.filter((x) => !isWithered(x)).reduce((n, x) => n + sessionTrees(x), 0), dead = sorted.filter(isWithered).length;
     $('#stats-plot-counts').textContent = !sorted.length ? 'No sessions in this period yet'
       : `${grown} tree${grown === 1 ? '' : 's'}${dead ? ` · ${dead} withered` : ''}${r.shown < r.total ? ` · showing the latest ${r.shown}` : ''}`;
     if (!sorted.length) host.insertAdjacentHTML('beforeend', '<div class="plot-empty">Finish a session to plant a tree here</div>');
@@ -1490,12 +1647,13 @@
       makeStars();
     }
     const items = gardenItems(trees);
-    const r = renderPlot($('#garden-plot'), items, { seed: 'garden' + (gardenFilter || ''), key: 'gd', min: 5 });
-    const total = trees.reduce((a, t) => a + (t.duration || 0), 0);
-    $('#gs-caption').innerHTML = trees.length ? `<b>${trees.length}</b> tree${trees.length === 1 ? '' : 's'} · ${fmtDur(total)} of growing${r.shown < r.total ? ` · showing the latest ${r.shown}` : ''}` : 'Your first tree will appear here after 10 minutes of study';
+    const r = renderPlot($('#garden-plot'), items, { seed: 'garden' + (gardenFilter || ''), key: 'gd', min: 5, count: sessionTrees, decor: decorList() });
+    const total = trees.reduce((a, t) => a + (t.duration || 0), 0), count = trees.reduce((a, t) => a + treeCountOf(t), 0);
+    $('#gs-caption').innerHTML = trees.length ? `<b>${count}</b> tree${count === 1 ? '' : 's'} · ${fmtDur(total)} of growing${r.shown < r.total ? ` · showing the latest ${r.shown}` : ''}` : 'Your first tree will appear here after 10 minutes of study';
   }
   function renderGarden() {
-    animateNumber($('#g-trees'), D.trees.length, (v) => Math.round(v), 600);
+    animateNumber($('#g-trees'), totalTrees(), (v) => Math.round(v), 600);
+    renderDecorShop();
     animateNumber($('#g-coins'), D.coins, (v) => Math.round(v), 600);
     animateNumber($('#g-dead'), witheredCount(), (v) => Math.round(v), 600);
     const subs = [...new Set(D.trees.map((t) => t.subject))];
@@ -1519,9 +1677,9 @@
     });
     let idx = 0;
     const FLOWERS = ['#fde047', '#f9a8d4', '#ffffff', '#c4b5fd', '#fca5a5'];
-    host.innerHTML = [...groups.values()].map((g, gi) => `<div class="garden-month"><h3>${g.label} · ${g.list.length} tree${g.list.length > 1 ? 's' : ''}</h3><div class="garden-field">${
-      g.list.map((t) => { const h = hashStr(t.id); return `<div class="garden-tile" style="--i:${Math.min(idx++, 40)};--fl:${FLOWERS[h % 5]};--fx:${(h >> 3) % 70 + 15}%" data-id="${t.id}">${window.Tree.build(t.species, 'g' + t.id)}</div>`; }).join('')
-    }${butterflies(gi % 2 ? 1 : 2, 'f' + gi)}</div></div>`).join('');
+    host.innerHTML = [...groups.values()].map((g, gi) => { const cnt = g.list.reduce((a, t) => a + treeCountOf(t), 0); return `<div class="garden-month"><h3>${g.label} · ${cnt} tree${cnt > 1 ? 's' : ''}</h3><div class="garden-field">${
+      g.list.map((t) => Array.from({ length: treeCountOf(t) }, (_, k) => { const h = hashStr(t.id + k); return `<div class="garden-tile${treeCountOf(t) > 1 ? ' multi' : ''}" style="--i:${Math.min(idx++, 40)};--fl:${FLOWERS[h % 5]};--fx:${(h >> 3) % 70 + 15}%" data-id="${t.id}">${window.Tree.build(t.species, 'g' + t.id + '_' + k)}</div>`; }).join('')).join('')
+    }${butterflies(gi % 2 ? 1 : 2, 'f' + gi)}</div></div>`; }).join('');
     $$('.garden-tile', host).forEach((tile) => {
       const t = D.trees.find((x) => x.id === tile.dataset.id);
       const svg = $('.tree', tile);
@@ -1533,9 +1691,16 @@
       window.Tree.setGrowth(svg, 1, gr.g);
       requestAnimationFrame(() => $$('.part, .gpart, .grow, .shadow', svg).forEach((n) => { n.style.transition = ''; }));
       const sp = window.Tree.SPECIES.find((x) => x.id === t.species) || { name: 'Tree' };
-      tile.addEventListener('mouseenter', (e) => showTip(`<div class="tt-title">${sp.name}</div><div class="tt-row"><span><i style="--c:${colorOf(t.subject)}"></i>${esc(t.subject)}</span><b>${fmtDur(t.duration)}</b></div><div class="muted" style="margin-top:4px">${new Date(t.date).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</div>`, e));
+      // hovering one tree lights up all the trees from the same session
+      const mates = () => $$(`.garden-tile[data-id="${CSS.escape(t.id)}"]`, host);
+      const sess = D.sessions.find((x) => x.id === t.sessionId);
+      tile.addEventListener('mouseenter', (e) => {
+        host.classList.add('hl'); mates().forEach((m) => m.classList.add('lit'));
+        const n = treeCountOf(t);
+        showTip(`<div class="tt-title">${n > 1 ? `${n} × ` : ''}${sp.name}</div><div class="tt-row"><span><i style="--c:${colorOf(t.subject)}"></i>${esc(t.subject)}</span><b>${fmtDur(t.duration)}</b></div>${sess && sess.coins ? `<div class="tt-row"><span>Coins</span><b>+${sess.coins}</b></div>` : ''}<div class="muted" style="margin-top:4px">${new Date(t.date).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</div>`, e);
+      });
       tile.addEventListener('mousemove', moveTip);
-      tile.addEventListener('mouseleave', hideTip);
+      tile.addEventListener('mouseleave', () => { host.classList.remove('hl'); mates().forEach((m) => m.classList.remove('lit')); hideTip(); });
       tile.addEventListener('click', () => {
         const r = tile.getBoundingClientRect();
         burst(r.left + r.width / 2, r.top + r.height * 0.4, { n: 14, speed: 3, colors: [sp.leaf1 || '#4ade80', sp.leaf2 || '#2e7d3b'] });
@@ -1747,7 +1912,7 @@
     return {
       total: counted_.reduce((a, s) => a + s.duration, 0),
       longest: counted_.reduce((m, s) => Math.max(m, s.duration), D.active ? elapsedSec() : 0),
-      grown: D.trees.length,
+      grown: totalTrees(),
       owned: owned.length,
       opened: (D.collection && D.collection.opened) || 0,
       graded: allGradeRows().filter((x) => x.pct != null).length,
@@ -2847,7 +3012,7 @@
   // What the welcome screen needs from the app (see welcome.js)
   function welcomeCtx(ready, onLeave) {
     return {
-      ready, D, staticTree, paintTrees, fmtDur, animateNumber, butterflies, onLeave,
+      ready, D, staticTree, paintTrees, totalTrees, fmtDur, animateNumber, butterflies, onLeave,
       todayTotal: () => todaySessions().reduce((a, s) => a + s.duration, 0) + (D.active ? elapsedSec() : 0),
       streak: streakDays,
       weekTotals: () => {

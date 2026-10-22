@@ -194,7 +194,7 @@
       // ---- data for the panels
       const today = ctx.todayTotal();
       const streak = ctx.streak();
-      const grown = D.trees.length;
+      const grown = ctx.totalTrees ? ctx.totalTrees() : D.trees.length;
       const week = ctx.weekTotals(); // [{label, sec, today}]
       const wmax = Math.max(1, ...week.map((w) => w.sec));
       const q = QUOTES[(now.getFullYear() * 400 + now.getMonth() * 31 + now.getDate()) % QUOTES.length];
