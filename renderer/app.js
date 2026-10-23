@@ -72,7 +72,7 @@
   // ---------------- data ----------------
   // SCHEMA is the save-file format version. Bump it and add a migration below whenever
   // the save format changes, so older saves are always upgraded instead of lost.
-  const SCHEMA = 10;
+  const SCHEMA = 11;
   const MIGRATIONS = {
     // 1 -> 2 (app 1.0.1): subjects can be archived; coins are counted per 10-minute milestone
     1: (d) => {
@@ -175,6 +175,12 @@
       if (!d.social || typeof d.social !== 'object') d.social = blankSocial();
       return 'Added friends, friend streaks and weekly team tasks';
     },
+    // 10 -> 11 (app 1.10.0): trees and decorations can be dragged around the garden.
+    // Nothing is moved until the user drags something; until then the garden lays itself out.
+    10: (d) => {
+      if (!d.gardenSpots || typeof d.gardenSpots !== 'object') d.gardenSpots = {};
+      return 'Trees and decorations can be moved around the garden';
+    },
   };
   // shareGrades: off by default. claims: streak/task rewards taken. gifts: gift ids opened.
   // giftLog: coins given away today. names: names of people you've sent requests to.
@@ -210,6 +216,7 @@
       freeCases: { seed: 1 }, // every new user starts with one free Seed Pouch
       giftNotice: 'welcome',
       decor: {},
+      gardenSpots: {}, // garden view ('*' = all trees) -> { item key: [row, col] } once the user has dragged something
       social: blankSocial(),
       gradeExtras: {},
       gradeTargets: {},
@@ -243,6 +250,13 @@
     const obj = (v) => v && typeof v === 'object' && !Array.isArray(v);
     out.badgeClaims = obj(x.badgeClaims) ? x.badgeClaims : {};
     out.decor = obj(x.decor) ? x.decor : {};
+    out.gardenSpots = {};
+    if (obj(x.gardenSpots)) for (const [view, spots] of Object.entries(x.gardenSpots)) {
+      if (!obj(spots)) continue;
+      const ok = {};
+      for (const [k, c] of Object.entries(spots)) if (Array.isArray(c) && c.length === 2 && c.every((v) => Number.isInteger(v) && v >= 0 && v < 80)) ok[k] = c;
+      out.gardenSpots[view] = ok;
+    }
     out.social = Object.assign(blankSocial(), obj(x.social) ? x.social : {});
     ['claims', 'gifts', 'names'].forEach((k) => { if (!obj(out.social[k])) out.social[k] = {}; });
     if (!obj(out.social.giftLog)) out.social.giftLog = { day: '', spent: 0 };
@@ -1188,7 +1202,36 @@
     let res = null;
     for (let tries = 0; !res; tries++, n++) res = placeClusters(n, shown, tilesOf, seed, tries >= 5);
     n--;
-    const { placed, empties } = res;
+    const { placed } = res;
+    let { empties } = res;
+    // bought decorations take the first free cells; the rest get the odd flower or grass tuft
+    const decorCells = empties.slice(0, decor.length);
+    empties = empties.slice(decor.length);
+    const decorKeys = decor.map((id, k) => `d:${id}:${decor.slice(0, k).filter((x) => x === id).length}`);
+    const spots = opts.spots;
+    if (spots && Object.keys(spots).length) {
+      // the garden has been arranged by hand: keep everything where it was put,
+      // and give anything new its usual spot, or the nearest free one
+      Object.values(spots).forEach(([i, j]) => { n = Math.max(n, i + 1, j + 1); });
+      const ents = placed.map((p) => ({ key: `t:${p.x.id}:${p.k}`, want: p.cell, set: (c) => { p.cell = c; } }))
+        .concat(decor.map((id, k) => ({ key: decorKeys[k], want: decorCells[k], set: (c) => { decorCells[k] = c; } })));
+      const taken = new Set(), at = (c) => c[0] * n + c[1];
+      const fits = (c) => Array.isArray(c) && c[0] >= 0 && c[1] >= 0 && c[0] < n && c[1] < n;
+      ents.forEach((e) => { const c = spots[e.key]; if (fits(c) && !taken.has(at(c))) { taken.add(at(c)); e.set([c[0], c[1]]); e.done = true; } });
+      const later = [];
+      ents.forEach((e) => { if (e.done) return; if (!taken.has(at(e.want))) { taken.add(at(e.want)); e.set(e.want); } else later.push(e); });
+      later.forEach((e) => {
+        let best = null, bd = Infinity;
+        for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+          if (taken.has(i * n + j)) continue;
+          const d = (i - e.want[0]) ** 2 + (j - e.want[1]) ** 2;
+          if (d < bd) { bd = d; best = [i, j]; }
+        }
+        taken.add(at(best)); e.set(best);
+      });
+      empties = [];
+      for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) if (!taken.has(i * n + j)) empties.push([i, j]);
+    }
     const TW = 64, TH = 32, DEPTH = 26, TREE_W = 58, TREE_H = 72;
     const W = n * TW, top = TREE_H - 8, H = top + n * TH + DEPTH + 6;
     const cx0 = W / 2;
@@ -1200,10 +1243,8 @@
       const o = owner.get(i * n + j);
       tiles += `<polygon points="${x},${y - TH / 2} ${x + TW / 2},${y} ${x},${y + TH / 2} ${x - TW / 2},${y}" class="tile ${(i + j) % 2 ? 't1' : 't2'}"${o != null ? ` data-id="${o}"` : ''}/>`;
     }
-    // bought decorations take the first free cells; the rest get the odd flower or grass tuft
-    const decorCells = empties.slice(0, decor.length);
     let deco = '';
-    empties.slice(decor.length).forEach(([i, j]) => {
+    empties.forEach(([i, j]) => {
       const h = hashStr(seed + 'd' + i + ',' + j);
       if (h % 3) return;
       const [x, y] = pos(i, j);
@@ -1213,16 +1254,17 @@
     });
     // trees and decorations are drawn back to front together
     const items = placed.map((p) => ({ cell: p.cell, tree: p }))
-      .concat(decorCells.map((cell, k) => ({ cell, decor: decor[k] })))
+      .concat(decorCells.map((cell, k) => ({ cell, decor: decor[k], key: decorKeys[k] })))
       .sort((a, b) => (a.cell[0] + a.cell[1]) - (b.cell[0] + b.cell[1]) || a.cell[0] - b.cell[0]);
     const drawn = items.map((it, k) => {
       const [px, py] = pos(it.cell[0], it.cell[1]);
-      if (it.decor) return `<g class="dc" data-d="${it.decor}" transform="translate(${px},${py})" style="--d:${Math.min(k, 120) * 14}ms"><g class="dc-in">${decorSvg(it.decor)}</g></g>`;
+      const at = `data-cell="${it.cell[0]},${it.cell[1]}"`;
+      if (it.decor) return `<g class="dc" data-d="${it.decor}" data-key="${it.key}" ${at} transform="translate(${px},${py})" style="--d:${Math.min(k, 120) * 14}ms"><g class="dc-in">${decorSvg(it.decor)}</g></g>`;
       const { x, k: nth } = it.tree;
       const svg = window.Tree.build(treeOfSession(x), (opts.key || 'p') + x.id + '_' + nth)
         .replace('<svg class="tree', `<svg x="${px - TREE_W / 2}" y="${py - TREE_H + 6}" width="${TREE_W}" height="${TREE_H}" data-sec="${Math.round(x.duration)}"${isWithered(x) ? ' data-withered="1"' : ''} data-fixed="1" class="tree static`)
         .replace('viewBox="0 0 200 240"', 'viewBox="14 0 172 220"');
-      return `<g class="pt" data-id="${x.id}" style="--d:${Math.min(k, 120) * 14}ms">${svg}</g>`;
+      return `<g class="pt" data-id="${x.id}" data-key="t:${x.id}:${nth}" ${at} style="--d:${Math.min(k, 120) * 14}ms">${svg}</g>`;
     }).join('');
     const y0 = top + n * TH / 2, yb = top + n * TH;
     host.innerHTML = `<svg class="plot" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
@@ -1239,20 +1281,163 @@
       plot.classList.toggle('hl', on);
       $$(`.pt[data-id="${CSS.escape(id)}"], .tile[data-id="${CSS.escape(id)}"]`, plot).forEach((el) => el.classList.toggle('lit', on));
     };
+    const busy = () => plot.classList.contains('dragging');
     $$('.pt', host).forEach((g) => {
       const x = byId.get(g.dataset.id);
-      g.addEventListener('mouseenter', (ev) => { light(g.dataset.id, true); showTip(sessionTip(x), ev); });
+      g.addEventListener('mouseenter', (ev) => { if (!busy()) { light(g.dataset.id, true); showTip(sessionTip(x), ev); } });
       g.addEventListener('mousemove', moveTip);
       g.addEventListener('mouseleave', () => { light(g.dataset.id, false); hideTip(); });
     });
     $$('.dc', host).forEach((g) => {
       const d = DECOR.find((x) => x.id === g.dataset.d);
-      g.addEventListener('mouseenter', (ev) => showTip(`<div class="tt-title">${esc(d.name)}</div><div class="muted">${esc(d.desc)}</div>`, ev));
+      g.addEventListener('mouseenter', (ev) => { if (!busy()) showTip(`<div class="tt-title">${esc(d.name)}</div><div class="muted">${esc(d.desc)}</div>`, ev); });
       g.addEventListener('mousemove', moveTip);
       g.addEventListener('mouseleave', hideTip);
-      g.addEventListener('click', () => { const r = g.getBoundingClientRect(); burst(r.left + r.width / 2, r.top + r.height / 3, { n: 12, speed: 3, leaf: false, colors: ['#ffffff', '#fde68a', '#86efac'] }); g.classList.remove('boing'); void g.getBBox(); g.classList.add('boing'); });
+      g.addEventListener('click', () => { if (busy()) return; const r = g.getBoundingClientRect(); burst(r.left + r.width / 2, r.top + r.height / 3, { n: 12, speed: 3, leaf: false, colors: ['#ffffff', '#fde68a', '#86efac'] }); g.classList.remove('boing'); void g.getBBox(); g.classList.add('boing'); });
     });
+    if (opts.onMove) {
+      plot.classList.add('movable');
+      const cellAt = (x, y) => {
+        const u = (x - cx0) / (TW / 2), v = (y - top) / (TH / 2) - 1;
+        const c = (a) => Math.max(0, Math.min(n - 1, Math.round(a)));
+        return [c((u + v) / 2), c((v - u) / 2)];
+      };
+      plotDrag(plot, { n, pos, cellAt, TREE_W, TREE_H, onMove: opts.onMove, unlight: () => { plot.classList.remove('hl'); $$('.lit', plot).forEach((el) => el.classList.remove('lit')); } });
+    }
     return { shown: shown.length, total: list.length };
+  }
+
+  // Garden page only: click and hold a tree or decoration, then drag it to another tile.
+  // Dropping onto something else swaps the two. The whole layout is saved after each move.
+  function plotDrag(plot, o) {
+    const HOLD = 300;
+    const tileEls = $$('.tiles > .tile', plot);
+    const layer = $('.trees', plot);
+    const cellOf = (g) => g.dataset.cell.split(',').map(Number);
+    const itemAt = (c, not) => $$('.trees > g', plot).find((g) => g !== not && g.dataset.cell === c.join(','));
+    const toSvg = (e) => { const p = plot.createSVGPoint(); p.x = e.clientX; p.y = e.clientY; return p.matrixTransform(plot.getScreenCTM().inverse()); };
+    const place = (g, x, y) => {
+      g._at = [x, y];
+      if (g.classList.contains('dc')) g.setAttribute('transform', `translate(${x.toFixed(1)},${y.toFixed(1)})`);
+      else { const svg = g.firstElementChild; svg.setAttribute('x', (x - o.TREE_W / 2).toFixed(1)); svg.setAttribute('y', (y - o.TREE_H + 6).toFixed(1)); }
+    };
+    // the shape that plays the hold / lift / land animations
+    const body = (g) => (g.classList.contains('dc') ? g.firstElementChild : g);
+    const glide = (g, to, ms) => {
+      const from = g._at || o.pos(...cellOf(g)), t0 = performance.now();
+      const step = (t) => {
+        const k = Math.min(1, (t - t0) / ms), e = 1 - (1 - k) ** 3;
+        place(g, from[0] + (to[0] - from[0]) * e, from[1] + (to[1] - from[1]) * e);
+        if (k < 1) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    };
+    const land = (g) => {
+      const b = body(g);
+      b.style.animation = 'none';
+      void b.getBoundingClientRect();
+      b.style.animation = 'plotLand .55s var(--spring)';
+    };
+    // keep things further back drawn first
+    const restack = (g) => {
+      const [i, j] = cellOf(g);
+      const after = $$('.trees > g', plot).find((x) => { if (x === g) return false; const [a, b] = cellOf(x); return a + b > i + j || (a + b === i + j && a > i); });
+      layer.insertBefore(g, after || null);
+    };
+    const setTile = (c, g) => {
+      const t = tileEls[c[0] * o.n + c[1]];
+      if (!t) return;
+      if (g && g.classList.contains('pt')) t.dataset.id = g.dataset.id; else delete t.dataset.id;
+    };
+    let hold = null, drag = null, eatClick = false;
+    const markDrop = (c) => {
+      $$('.tile.drop', plot).forEach((t) => t.classList.remove('drop'));
+      $$('.trees > g.nudge', plot).forEach((g) => g.classList.remove('nudge'));
+      if (!c) return;
+      const t = tileEls[c[0] * o.n + c[1]];
+      if (t) t.classList.add('drop');
+      const other = itemAt(c, drag && drag.g);
+      if (other) other.classList.add('nudge');
+    };
+    const tick = () => {
+      if (!drag) return;
+      const [x, y] = drag.g._at, [tx, ty] = drag.want;
+      place(drag.g, x + (tx - x) * 0.38, y + (ty - y) * 0.38);
+      drag.raf = requestAnimationFrame(tick);
+    };
+    const lift = (g, e) => {
+      hold = null;
+      hideTip(); o.unlight();
+      body(g).style.animation = 'none';
+      g.classList.remove('holding');
+      g.classList.add('lifted');
+      plot.classList.add('dragging');
+      try { plot.setPointerCapture(e.pointerId); } catch (err) {}
+      const from = cellOf(g), base = o.pos(...from), p = toSvg(e);
+      g._at = base;
+      layer.appendChild(g);
+      drag = { g, from, target: from, grab: [p.x - base[0], p.y - base[1] + 6], want: [base[0], base[1] - 6] };
+      markDrop(from);
+      drag.raf = requestAnimationFrame(tick);
+    };
+    const finish = (cancel) => {
+      const { g, from, target } = drag;
+      cancelAnimationFrame(drag.raf);
+      drag = null;
+      markDrop(null);
+      plot.classList.remove('dragging');
+      g.classList.remove('lifted');
+      const to = cancel ? from : target;
+      const moved = to.join(',') !== from.join(',');
+      const other = moved && itemAt(to, g);
+      g.dataset.cell = to.join(',');
+      glide(g, o.pos(...to), 170);
+      land(g);
+      if (other) {
+        other.dataset.cell = from.join(',');
+        glide(other, o.pos(...from), 320);
+        land(other);
+        restack(other);
+      }
+      restack(g);
+      if (!moved) return;
+      setTile(from, other); setTile(to, g);
+      const r = g.getBoundingClientRect();
+      burst(r.left + r.width / 2, r.bottom - 4, { n: 10, speed: 2.4, leaf: g.classList.contains('pt'), colors: ['#86efac', '#4ade80', '#d6b88a'] });
+      const layout = {};
+      $$('.trees > g', plot).forEach((x) => { layout[x.dataset.key] = cellOf(x); });
+      o.onMove(layout);
+    };
+    plot.addEventListener('pointerdown', (e) => {
+      eatClick = false;
+      const g = e.target.closest('.trees > g');
+      if (!g || e.button !== 0 || drag) return;
+      const sx = e.clientX, sy = e.clientY;
+      g.classList.add('holding');
+      const stop = () => { clearTimeout(hold && hold.t); hold = null; g.classList.remove('holding'); window.removeEventListener('pointermove', early); window.removeEventListener('pointerup', stop); };
+      const early = (ev) => { if (Math.hypot(ev.clientX - sx, ev.clientY - sy) > 6) stop(); };
+      hold = { t: setTimeout(() => { window.removeEventListener('pointermove', early); window.removeEventListener('pointerup', stop); lift(g, e); }, HOLD) };
+      window.addEventListener('pointermove', early);
+      window.addEventListener('pointerup', stop);
+    });
+    plot.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const p = toSvg(e);
+      const x = p.x - drag.grab[0], y = p.y - drag.grab[1];
+      drag.want = [x, y - 6];
+      const c = o.cellAt(x, y);
+      if (c.join(',') !== drag.target.join(',')) { drag.target = c; markDrop(c); }
+    });
+    const end = (cancel) => (e) => { if (!drag) return; eatClick = !cancel || e.type === 'pointercancel'; finish(cancel); };
+    plot.addEventListener('pointerup', end(false));
+    plot.addEventListener('pointercancel', end(true));
+    plot.addEventListener('lostpointercapture', () => { if (drag) finish(true); });
+    window.addEventListener('keydown', function esc(e) {
+      if (!plot.isConnected) return window.removeEventListener('keydown', esc);
+      if (e.key === 'Escape' && drag) { eatClick = true; finish(true); }
+    });
+    // a drag ends with a click on the item; don't treat it as one
+    plot.addEventListener('click', (e) => { if (eatClick) { e.stopPropagation(); eatClick = false; } }, true);
   }
 
   // ---- garden decorations: bought with coins, purely for looks ----
@@ -1690,9 +1875,14 @@
       makeStars();
     }
     const items = gardenItems(trees);
-    const r = renderPlot($('#garden-plot'), items, { seed: 'garden' + (gardenFilter || ''), key: 'gd', min: 5, count: sessionTrees, decor: decorList() });
+    const view = gardenFilter || '*';
+    const r = renderPlot($('#garden-plot'), items, {
+      seed: 'garden' + (gardenFilter || ''), key: 'gd', min: 5, count: sessionTrees, decor: decorList(),
+      spots: D.gardenSpots[view],
+      onMove: readOnly ? null : (layout) => { D.gardenSpots[view] = layout; save(); },
+    });
     const total = trees.reduce((a, t) => a + (t.duration || 0), 0), count = trees.reduce((a, t) => a + treeCountOf(t), 0);
-    $('#gs-caption').innerHTML = trees.length ? `<b>${count}</b> tree${count === 1 ? '' : 's'} · ${fmtDur(total)} of growing${r.shown < r.total ? ` · showing the latest ${r.shown}` : ''}` : 'Your first tree will appear here after 10 minutes of study';
+    $('#gs-caption').innerHTML = trees.length ? `<b>${count}</b> tree${count === 1 ? '' : 's'} · ${fmtDur(total)} of growing${r.shown < r.total ? ` · showing the latest ${r.shown}` : ''}<span class="gs-hint"> · hold to move things</span>` : 'Your first tree will appear here after 10 minutes of study';
   }
   function renderGarden() {
     animateNumber($('#g-trees'), totalTrees(), (v) => Math.round(v), 600);
@@ -2452,7 +2642,7 @@
     { sel: '#nav-more', title: 'More tabs', text: 'At first only the Timer tab shows, to keep things simple. Press this arrow to open all the other tabs, and press it again to tuck them away.' },
     { sel: '.nav-item[data-page="stats"]', title: 'Stats', text: 'Pie and bar charts for any day, week, month or year.' },
     { sel: '.nav-item[data-page="grades"]', title: 'Grades', text: 'Pick a subject to see your Semester 1 and Semester 2 averages and exams, and what you need on the rest to get the grade you want.' },
-    { sel: '.nav-item[data-page="garden"]', title: 'Garden', text: 'Every tree that took root is planted here. You can also spend coins on decorations in the Garden shop.' },
+    { sel: '.nav-item[data-page="garden"]', title: 'Garden', text: 'Every tree that took root is planted here. Click and hold a tree or decoration to drag it somewhere new. You can also spend coins on decorations in the Garden shop.' },
     { sel: '.nav-item[data-page="trees"]', title: 'Trees', text: 'Spend coins on cases to unlock new trees. Pricier cases have rarer trees. Duplicates give some coins back.' },
     { sel: '.nav-item[data-page="friends"]', title: 'Friends', text: 'Add friends with their 4-letter code (yours is at the top of this tab). Open a friend to see their stats, sessions, trees and badges, or send them a gift. Start a streak by both studying 15 minutes a day, and team up on weekly tasks, where each of you has to do your share. Both earn coins and free cases. Your grades stay private unless you choose to share them.' },
     { sel: '.nav-item[data-page="badges"]', title: 'Badges', text: 'Earn badges as you study, including friend streak and team task badges. Each one has a reward to claim: coins, or free cases for the big ones.' },
