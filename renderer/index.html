@@ -6,6 +6,7 @@
 <title>Study Tracker</title>
 <link rel="stylesheet" href="styles.css">
 <link rel="stylesheet" href="welcome.css">
+<link rel="stylesheet" href="friends.css">
 </head>
 <body data-theme="forest" class="booting">
 
@@ -22,10 +23,12 @@
   <nav id="sidebar">
     <div class="nav-indicator" id="nav-indicator"></div>
     <button class="nav-item active" data-page="timer"><svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6M12 2v3"/></svg><span>Timer</span></button>
+    <button class="nav-more" id="nav-more" title="Show all tabs" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
     <button class="nav-item" data-page="stats"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><span>Stats</span></button>
     <button class="nav-item" data-page="grades"><svg viewBox="0 0 24 24"><path d="M5 3h10l4 4v14H5z"/><path d="M8.5 17l3-8 3 8M9.6 14.3h3.8"/></svg><span>Grades</span></button>
     <button class="nav-item" data-page="garden"><svg viewBox="0 0 24 24"><path d="M12 22v-8M12 14c-4 0-7-3-7-7 4 0 7 3 7 7zM12 12c0-4 3-7 7-7 0 4-3 7-7 7z"/></svg><span>Garden</span></button>
     <button class="nav-item" data-page="trees"><svg viewBox="0 0 24 24"><path d="M3 9l9-5 9 5v9l-9 5-9-5z"/><path d="M3 9l9 5 9-5M12 14v9"/></svg><span>Trees</span></button>
+    <button class="nav-item" data-page="friends"><svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.5-4 3-6.5 6.5-6.5s6 2.5 6.5 6.5"/><circle cx="17" cy="9" r="2.8"/><path d="M15.5 14c.5-.2 1-.3 1.5-.3 2.8 0 4.6 2 5 5.3"/></svg><span>Friends</span></button>
     <button class="nav-item" data-page="badges"><svg viewBox="0 0 24 24"><circle cx="12" cy="9" r="6"/><path d="M8.5 13.8 7 22l5-3 5 3-1.5-8.2"/><path d="M12 6.5l.9 1.8 2 .3-1.5 1.4.4 2-1.8-1-1.8 1 .4-2-1.5-1.4 2-.3z" fill="currentColor" stroke="none"/></svg><span>Badges</span></button>
     <button class="nav-item" data-page="history"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg><span>History</span></button>
     <div class="nav-spacer"></div>
@@ -200,6 +203,15 @@
       </div>
     </section>
 
+    <!-- FRIENDS -->
+    <section class="page" id="page-friends">
+      <header class="page-head stagger" style="--i:0">
+        <div><h1>Friends</h1><p class="sub">Study together: see each other's progress, keep a streak going and finish weekly tasks as a team.</p></div>
+        <div class="head-stats"><button class="mini-stat fr-code" id="fr-code"></button></div>
+      </header>
+      <div id="fr-body"></div>
+    </section>
+
     <section class="page" id="page-badges">
       <header class="page-head stagger" style="--i:0">
         <div><h1>Achievements</h1><p class="sub">Collect badges as you study, and claim a reward for each one.</p></div>
@@ -354,6 +366,7 @@
 
 <script src="tree.js"></script>
 <script src="welcome.js"></script>
+<script src="friends.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

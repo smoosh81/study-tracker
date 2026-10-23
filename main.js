@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog, screen, shell } = require('electron
 const path = require('path');
 const fs = require('fs');
 const updater = require('./updater');
+const social = require('./social');
 
 let mainWin = null;
 let miniWin = null;
@@ -166,6 +167,8 @@ app.whenReady().then(() => {
   ipcMain.handle('data:load', () => readData());
   ipcMain.handle('data:save', (_e, data) => { writeData(data); return true; });
   ipcMain.handle('app:version', () => app.getVersion());
+  // friends (online); see social.js
+  ipcMain.handle('social', (_e, op, args) => social.call(op, args));
   // Before an older save is upgraded to a new format, keep an untouched copy of it.
   ipcMain.handle('data:backupBeforeUpgrade', (_e, { data, fromVersion }) => {
     const dir = path.join(app.getPath('userData'), 'backups');

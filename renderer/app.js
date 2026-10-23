@@ -72,7 +72,7 @@
   // ---------------- data ----------------
   // SCHEMA is the save-file format version. Bump it and add a migration below whenever
   // the save format changes, so older saves are always upgraded instead of lost.
-  const SCHEMA = 9;
+  const SCHEMA = 10;
   const MIGRATIONS = {
     // 1 -> 2 (app 1.0.1): subjects can be archived; coins are counted per 10-minute milestone
     1: (d) => {
@@ -170,7 +170,15 @@
       if (!d.decor || typeof d.decor !== 'object') d.decor = {};
       return 'Added garden decorations; longer sessions grow more trees';
     },
+    // 9 -> 10 (app 1.9.0): friends. Only settings and claimed rewards are kept here; friends live online.
+    9: (d) => {
+      if (!d.social || typeof d.social !== 'object') d.social = blankSocial();
+      return 'Added friends, friend streaks and weekly team tasks';
+    },
   };
+  // shareGrades: off by default. claims: streak/task rewards taken. gifts: gift ids opened.
+  // giftLog: coins given away today. names: names of people you've sent requests to.
+  function blankSocial() { return { shareGrades: false, claims: {}, gifts: {}, giftLog: { day: '', spent: 0 }, names: {}, bestStreak: 0, friendsMax: 0 }; }
   let readOnly = false; // true if the save came from a newer version of the app
   function migrate(raw) {
     if (!raw || typeof raw !== 'object') return raw;
@@ -202,6 +210,7 @@
       freeCases: { seed: 1 }, // every new user starts with one free Seed Pouch
       giftNotice: 'welcome',
       decor: {},
+      social: blankSocial(),
       gradeExtras: {},
       gradeTargets: {},
       grading: { scale: 'school', cuts: {} },
@@ -234,6 +243,10 @@
     const obj = (v) => v && typeof v === 'object' && !Array.isArray(v);
     out.badgeClaims = obj(x.badgeClaims) ? x.badgeClaims : {};
     out.decor = obj(x.decor) ? x.decor : {};
+    out.social = Object.assign(blankSocial(), obj(x.social) ? x.social : {});
+    ['claims', 'gifts', 'names'].forEach((k) => { if (!obj(out.social[k])) out.social[k] = {}; });
+    if (!obj(out.social.giftLog)) out.social.giftLog = { day: '', spent: 0 };
+    out.social.shareGrades = out.social.shareGrades === true;
     out.freeCases = obj(x.freeCases) ? x.freeCases : {};
     out.gradeExtras = obj(x.gradeExtras) ? x.gradeExtras : {};
     for (const [k, list] of Object.entries(out.gradeExtras)) {
@@ -252,6 +265,7 @@
     clearTimeout(saveTimer);
     if (readOnly) return;
     D.appVersion = APP_VERSION;
+    if (window.Friends) window.Friends.changed();
     if (now) return window.api.save(D);
     saveTimer = setTimeout(() => window.api.save(D), 250);
   }
@@ -432,12 +446,40 @@
     const btn = $(`.nav-item[data-page="${currentPage}"]`);
     $('#nav-indicator').style.transform = `translateY(${btn.offsetTop}px)`;
   }
+  // The sidebar starts with only the Timer showing; the arrow under it opens the rest.
+  // The page you're on always stays visible, so you never lose your place.
+  let navOpen = false;
+  function layoutNav(animate) {
+    const side = $('#sidebar');
+    side.classList.toggle('nav-open', navOpen);
+    let k = 0;
+    $$('.nav-item').forEach((b) => {
+      const show = navOpen || b.dataset.page === 'timer' || b.dataset.page === currentPage;
+      b.style.setProperty('--k', show && !b.classList.contains('nav-shown') ? k++ : 0);
+      b.classList.toggle('nav-shown', show);
+      b.classList.toggle('tucked', !show);
+      b.tabIndex = show ? 0 : -1;
+    });
+    $('#nav-more').title = navOpen ? 'Show fewer tabs' : 'Show all tabs';
+    $('#nav-more').setAttribute('aria-expanded', navOpen);
+    // keep the highlight on the right tab while the others slide in and out
+    if (animate) {
+      const t0 = performance.now();
+      const follow = () => { moveIndicator(); if (performance.now() - t0 < 700) requestAnimationFrame(follow); };
+      requestAnimationFrame(follow);
+    } else moveIndicator();
+    updateNavDots();
+  }
+  function toggleNav(open) {
+    navOpen = open === undefined ? !navOpen : open;
+    layoutNav(true);
+  }
   function go(page) {
     if (page === currentPage) return;
     const from = $(`#page-${currentPage}`), to = $(`#page-${page}`);
     $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
     currentPage = page;
-    moveIndicator();
+    layoutNav(true);
     from.classList.remove('active', 'enter');
     from.classList.add('leave');
     const left = from.id.slice(5);
@@ -454,7 +496,7 @@
   const HEAVY = {
     timer: ['#week-plot'], stats: ['#stats-plot'], garden: ['#garden', '#garden-plot', '#decor-shop'],
     trees: ['#collection', '#cases'], badges: ['#badge-cats'], history: ['#history-list'],
-    grades: ['#gr-body', '#gr-chips'],
+    grades: ['#gr-body', '#gr-chips'], friends: ['#fr-body'],
   };
   function freePage(p) {
     if (p === currentPage) return;
@@ -469,6 +511,7 @@
     if (p === 'badges') renderBadges();
     if (p === 'settings') renderSettings();
     if (p === 'grades') renderGrades();
+    if (p === 'friends' && window.Friends) window.Friends.render();
   }
 
   // ---------------- toasts, modals, tooltip, fx ----------------
@@ -1865,6 +1908,7 @@
     { id: 'grown', name: 'Trees grown', sub: 'Trees planted in your garden' },
     { id: 'collected', name: 'Trees collected', sub: 'Species unlocked from cases' },
     { id: 'school', name: 'School', sub: 'Planning tests and tracking your grades' },
+    { id: 'friends', name: 'Friends', sub: 'Streaks and weekly team tasks with friends' },
   ];
   const TIERS = {
     bronze: ['#ffd3a8', '#c9773a', '#7a3f16'], silver: ['#ffffff', '#b4bfcc', '#5b6675'], gold: ['#fff4b0', '#f5b301', '#9a6200'],
@@ -1904,6 +1948,17 @@
     { id: 'case-50', cat: 'collected', name: 'High roller', desc: 'Open 50 cases', metric: 'opened', goal: 50, tier: 'gold', label: '50', icon: 'box' },
     { id: 'grade-1', cat: 'school', name: 'Report card', desc: 'Record your first grade', metric: 'graded', goal: 1, tier: 'bronze', label: '1', icon: 'grade' },
     { id: 'grade-10', cat: 'school', name: 'Keeping score', desc: 'Record 10 grades', metric: 'graded', goal: 10, tier: 'silver', label: '10', icon: 'grade' },
+    { id: 'friend-1', cat: 'friends', name: 'Study buddy', desc: 'Add your first friend', metric: 'friends', goal: 1, tier: 'bronze', label: '1', icon: 'people' },
+    { id: 'friend-5', cat: 'friends', name: 'Study group', desc: 'Have 5 friends', metric: 'friends', goal: 5, tier: 'silver', label: '5', icon: 'people' },
+    { id: 'fstreak-3', cat: 'friends', name: 'Spark', desc: 'Reach a 3 day streak with a friend', metric: 'fstreak', goal: 3, tier: 'bronze', label: '3', icon: 'flame' },
+    { id: 'fstreak-7', cat: 'friends', name: 'On fire', desc: 'Reach a 7 day streak with a friend', metric: 'fstreak', goal: 7, tier: 'silver', label: '7', icon: 'flame' },
+    { id: 'fstreak-30', cat: 'friends', name: 'Inseparable', desc: 'Reach a 30 day streak with a friend', metric: 'fstreak', goal: 30, tier: 'gold', label: '30', icon: 'flame' },
+    { id: 'fstreak-100', cat: 'friends', name: 'Legendary duo', desc: 'Reach a 100 day streak with a friend', metric: 'fstreak', goal: 100, tier: 'diamond', label: '100', icon: 'flame' },
+    { id: 'quest-1', cat: 'friends', name: 'Team player', desc: 'Complete a weekly team task', metric: 'tasks', goal: 1, tier: 'bronze', label: '1', icon: 'flag' },
+    { id: 'quest-10', cat: 'friends', name: 'Dream team', desc: 'Complete 10 weekly team tasks', metric: 'tasks', goal: 10, tier: 'silver', label: '10', icon: 'flag' },
+    { id: 'quest-50', cat: 'friends', name: 'Unstoppable', desc: 'Complete 50 weekly team tasks', metric: 'tasks', goal: 50, tier: 'gold', label: '50', icon: 'flag' },
+    { id: 'questweek-1', cat: 'friends', name: 'Clean sweep', desc: 'Finish all three team tasks in one week', metric: 'fullweeks', goal: 1, tier: 'silver', label: '3/3', icon: 'flag' },
+    { id: 'questweek-10', cat: 'friends', name: 'Perfect partners', desc: 'Finish all three team tasks in 10 weeks', metric: 'fullweeks', goal: 10, tier: 'platinum', label: '10', icon: 'crown' },
     { id: 'grade-top', cat: 'school', name: 'Top marks', desc: 'Score 90% or more on a test, exam or assignment', metric: 'top', goal: 1, tier: 'silver', label: '90', icon: 'star' },
   ];
   function badgeMetrics() {
@@ -1918,6 +1973,7 @@
       graded: allGradeRows().filter((x) => x.pct != null).length,
       top: allGradeRows().filter((x) => x.pct >= 90).length,
       rarity: (r) => owned.filter((x) => x.rarity === r).length,
+      ...(window.Friends ? window.Friends.badgeMetrics() : { friends: 0, fstreak: 0, tasks: 0, fullweeks: 0 }),
     };
   }
   function badgeProgress(b, m) {
@@ -1937,6 +1993,9 @@
     cal: '<rect x="30" y="32" width="40" height="34" rx="5" fill="currentColor"/><path d="M30 42h40" stroke="rgba(0,0,0,.25)" stroke-width="3"/><path d="M39 27v9M61 27v9" stroke="currentColor" stroke-width="5" stroke-linecap="round"/><path d="M41 54l6 6 12-12" fill="none" stroke="rgba(255,255,255,.75)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>',
     grade: '<path d="M34 28h24l10 10v30H34z" fill="currentColor"/><path d="M42 58l7-20 7 20M45 51h8" fill="none" stroke="rgba(255,255,255,.8)" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>',
     star: '<path d="M50 27l6.5 13.5 14.5 2-10.5 10 2.5 14.5L50 60l-13 7 2.5-14.5-10.5-10 14.5-2z" fill="currentColor"/>',
+    people: '<circle cx="42" cy="38" r="8" fill="currentColor"/><path d="M28 64c1-10 6-15 14-15s13 5 14 15z" fill="currentColor"/><circle cx="60" cy="40" r="7" fill="currentColor" opacity=".7"/><path d="M52 51c2-1 5-2 8-2 7 0 11 5 12 14H58" fill="currentColor" opacity=".7"/>',
+    flame: '<path d="M50 26c2 8 13 12 13 25a13 13 0 0 1-26 0c0-6 4-10 6-12 0 4 2 6 4 6 0-8-2-12 3-19z" fill="currentColor"/><path d="M50 50c2 3 6 5 6 10a6 6 0 0 1-12 0c0-3 2-5 3-6 .4 2 1.6 2.8 3 2.8 0-3.2-1.2-4.8 0-6.8z" fill="rgba(255,255,255,.6)"/>',
+    flag: '<path d="M36 28v42" stroke="currentColor" stroke-width="5" stroke-linecap="round"/><path d="M38 30c8-5 14 4 24-1v20c-10 5-16-4-24 1z" fill="currentColor"/>',
     box: '<path d="M32 42h36v24H32z" fill="currentColor"/><path d="M29 34h42v9H29z" fill="currentColor" opacity=".8"/><path d="M47 34h6v32h-6z" fill="rgba(255,255,255,.55)"/>',
   };
   function badgeSvg(b, uidKey) {
@@ -2095,6 +2154,13 @@
     };
     set('badges', unclaimed().length);
     set('trees', totalFree());
+    if (window.Friends) set('friends', window.Friends.pending());
+    // a red dot on the arrow when a hidden tab has something waiting
+    const more = $('#nav-more');
+    if (more) {
+      const hidden = $$('.nav-item.tucked .ndot').length;
+      more.classList.toggle('has-dot', !navOpen && hidden > 0);
+    }
   }
   // flies a little gift box from an element to the Trees tab
   function flyGift(fromEl, color) {
@@ -2383,11 +2449,13 @@
     { sel: '#tree-chips', title: 'Pick a tree', text: 'Choose which tree to grow. Your last session\'s tree is picked for you. Rare trees earn bonus coins.' },
     { sel: '.controls', title: 'Start the stopwatch', text: 'Start and pause as you need. Stop saves the session. Cancel throws it away. The space bar also starts and pauses.' },
     { sel: '.tree-card', title: 'Your forest and your tree', text: 'Before you start, this shows your forest for the week. Each session grows one tree for every half hour, planted side by side. Hover over one to light up its session, and use the arrows to see earlier weeks. Once you start, your new tree grows here. At 10 minutes it takes root and earns 10 coins, then 1 coin for every extra minute, plus a 5 coin bonus at each full hour. Cancel before 10 minutes and it dies.' },
+    { sel: '#nav-more', title: 'More tabs', text: 'At first only the Timer tab shows, to keep things simple. Press this arrow to open all the other tabs, and press it again to tuck them away.' },
     { sel: '.nav-item[data-page="stats"]', title: 'Stats', text: 'Pie and bar charts for any day, week, month or year.' },
     { sel: '.nav-item[data-page="grades"]', title: 'Grades', text: 'Pick a subject to see your Semester 1 and Semester 2 averages and exams, and what you need on the rest to get the grade you want.' },
     { sel: '.nav-item[data-page="garden"]', title: 'Garden', text: 'Every tree that took root is planted here. You can also spend coins on decorations in the Garden shop.' },
     { sel: '.nav-item[data-page="trees"]', title: 'Trees', text: 'Spend coins on cases to unlock new trees. Pricier cases have rarer trees. Duplicates give some coins back.' },
-    { sel: '.nav-item[data-page="badges"]', title: 'Badges', text: 'Earn badges as you study. Each one has a reward to claim: coins, or free cases for the big ones.' },
+    { sel: '.nav-item[data-page="friends"]', title: 'Friends', text: 'Add friends with their 4-letter code (yours is at the top of this tab). Open a friend to see their stats, sessions, trees and badges, or send them a gift. Start a streak by both studying 15 minutes a day, and team up on weekly tasks, where each of you has to do your share. Both earn coins and free cases. Your grades stay private unless you choose to share them.' },
+    { sel: '.nav-item[data-page="badges"]', title: 'Badges', text: 'Earn badges as you study, including friend streak and team task badges. Each one has a reward to claim: coins, or free cases for the big ones.' },
     { sel: '.nav-item[data-page="history"]', title: 'History', text: 'Every past session with its tree. You can delete sessions here, including withered and cancelled ones.' },
     { sel: '.nav-item[data-page="settings"]', title: 'Settings', text: 'Change subjects, mark finished ones, switch themes, and back up your data.' },
     { sel: '#coin-pill', title: 'Your coins', text: 'Your coin total is always up here. That\'s everything. Happy studying!' },
@@ -2401,6 +2469,7 @@
   }
   function endTour() {
     D.profile.tutorialSeen = true; save();
+    if (navOpen && currentPage === 'timer') toggleNav(false);
     $('#tour').classList.add('closing');
     setTimeout(() => $('#tour').classList.add('hidden'), 350);
     $('#page-timer').scrollTo({ top: 0, behavior: 'smooth' });
@@ -2436,6 +2505,14 @@
       y = Math.max(50, Math.min(innerHeight - ch - 16, y));
       card.style.left = x + 'px'; card.style.top = y + 'px';
     };
+    // the tabs are tucked away until the arrow is pressed, so open them for the tour
+    if (st.sel && st.sel.startsWith('.nav-item') && !navOpen) {
+      toggleNav(true);
+      $('#tour-spot').classList.add('none');
+      setTimeout(place, 650);
+      return;
+    }
+    if (st.sel === '#nav-more' && navOpen && currentPage === 'timer') { toggleNav(false); setTimeout(place, 650); return; }
     if (el && el.closest('.page')) {
       const b = el.getBoundingClientRect();
       if (b.top < 50 || b.bottom > innerHeight - 10) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); setTimeout(place, 420); return; }
@@ -2823,12 +2900,14 @@
     const pg = $(`#page-${currentPage}`);
     renderPage(currentPage);
     pg.classList.remove('enter'); void pg.offsetWidth; pg.classList.add('enter');
+    layoutNav(false);
     requestAnimationFrame(moveIndicator);
   }
 
   // ---------------- wiring ----------------
   function wire() {
     $$('.nav-item').forEach((b) => b.addEventListener('click', () => go(b.dataset.page)));
+    $('#nav-more').addEventListener('click', () => toggleNav());
     $('#btn-start').addEventListener('click', start);
     $('#btn-stop').addEventListener('click', stop);
     $('#btn-cancel').addEventListener('click', () => cancel(false));
@@ -2850,7 +2929,7 @@
       }
       if (e.target.matches('input, select, textarea') || $('.modal-back') || !$('#onboarding').classList.contains('hidden') || !$('#case-overlay').classList.contains('hidden')) return;
       if (e.code === 'Space' && currentPage === 'timer') { e.preventDefault(); start(); }
-      if (e.ctrlKey && e.key >= '1' && e.key <= '8') go(['timer', 'stats', 'grades', 'garden', 'trees', 'badges', 'history', 'settings'][+e.key - 1]);
+      if (e.ctrlKey && e.key >= '1' && e.key <= '9') go(['timer', 'stats', 'grades', 'garden', 'trees', 'friends', 'badges', 'history', 'settings'][+e.key - 1]);
     });
 
     // stats
@@ -2888,7 +2967,10 @@
     $('#set-cuts-reset').addEventListener('click', () => { if (D.grading.cuts) delete D.grading.cuts[D.grading.scale]; save(); renderGradingSettings(); });
 
     // settings
-    $('#set-name').addEventListener('change', () => { D.profile.name = $('#set-name').value.trim(); save(); });
+    $('#set-name').addEventListener('change', () => {
+      D.profile.name = $('#set-name').value.trim(); save();
+      if (window.Friends && window.Friends.cleanName(D.profile.name).censored) toast('Friends will see "Student" instead, because that name has a word that isn\'t allowed', 4200);
+    });
     $('#set-automini').addEventListener('click', () => { D.profile.autoMini = !D.profile.autoMini; $('#set-automini').classList.toggle('on', D.profile.autoMini); save(); });
     $('#set-welcome').addEventListener('click', () => { D.profile.welcome = D.profile.welcome === false; $('#set-welcome').classList.toggle('on', D.profile.welcome); save(); });
     const addS = () => { if (addSubjectFromInput($('#set-new-subject'))) { renderSubjectSettings(); renderSubjectChips(); } };
@@ -3008,6 +3090,33 @@
     $('#upd-pill-x').addEventListener('click', () => { updPillDismissed = true; hidePill(); });
   }
 
+  // ---------------- friends (see friends.js) ----------------
+  // grade averages, only sent to friends when "Share my grades" is on
+  function gradeSummary() {
+    const cell = (rows) => {
+      const m = gradeMath(rows);
+      if (m.avg == null) return null;
+      const g = letterOf(m.avg);
+      return { p: Math.round(m.avg * 10) / 10, l: g ? g.l : '', c: gradeColor(g) };
+    };
+    return Object.keys(D.gradeExtras).filter((n) => (D.gradeExtras[n] || []).some((x) => x.pct != null)).map((n) => ({
+      n, c: colorOf(n),
+      s1: cell(semRows(n, 1)), s2: cell(semRows(n, 2)),
+      e1: cell(semRows(n, 1).filter((x) => x.exam)), e2: cell(semRows(n, 2).filter((x) => x.exam)),
+    }));
+  }
+  function friendsCtx() {
+    return {
+      D: () => D, readOnly: () => readOnly, currentPage: () => currentPage,
+      save, toast, modal, burst, esc, fmtDur, fmtTime, dayKey, startOfDay, startOfWeek, addDays,
+      counted, isWithered, sessionTrees, totalTrees, witheredCount, colorOf, streakDays, elapsedSec, owns,
+      staticTree, paintTrees, flyCoins, flyGift, renderCoins, showTip, moveTip, hideTip, positionSegs,
+      checkAchievements, updateNavDots, gradeSummary, rewardChip, rewardText, caseName, CASES, BADGES, TIERS, badgeSvg,
+      caseColor: (id) => (CASES.find((c) => c.id === id) || { color: '#fbbf24' }).color,
+      validTree: (id) => (window.Tree.SPECIES.some((x) => x.id === id) ? id : 'oak'),
+    };
+  }
+
   // ---------------- boot ----------------
   // What the welcome screen needs from the app (see welcome.js)
   function welcomeCtx(ready, onLeave) {
@@ -3040,6 +3149,7 @@
     currentPage = page;
     $(`#page-${page}`).classList.add('active');
     $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
+    layoutNav(false);
   }
   async function boot() {
     // the startup animation plays while the save loads
@@ -3060,6 +3170,7 @@
     buildOdometer();
     wire();
     setupUpdates();
+    if (window.Friends) window.Friends.init(friendsCtx());
     // restore a session that was running when the app closed (it resumes paused)
     if (D.active) {
       D.active.segStart = null;
@@ -3108,6 +3219,8 @@
       enterApp();
       afterOpen();
     }
+    // friends load in the background; offline this just quietly does nothing
+    if (window.Friends && !readOnly) setTimeout(() => window.Friends.start(), 2500);
     // refresh "today" and the greeting when the date rolls over
     setInterval(() => { updateDayPhase(); if (currentPage === 'timer') { renderToday(); } }, 60000);
   }
