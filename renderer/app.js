@@ -72,7 +72,7 @@
   // ---------------- data ----------------
   // SCHEMA is the save-file format version. Bump it and add a migration below whenever
   // the save format changes, so older saves are always upgraded instead of lost.
-  const SCHEMA = 12;
+  const SCHEMA = 13;
   const MIGRATIONS = {
     // 1 -> 2 (app 1.0.1): subjects can be archived; coins are counted per 10-minute milestone
     1: (d) => {
@@ -187,6 +187,11 @@
       if (d.profile && typeof d.profile === 'object' && typeof d.profile.notesSeen !== 'string') d.profile.notesSeen = '';
       return 'Grades can be entered as letters; a list of changes shows after each update';
     },
+    // 12 -> 13 (app 1.12.0): daily login reward. login.days counts the days the app was opened.
+    12: (d) => {
+      if (!d.login || typeof d.login !== 'object') d.login = { last: '', days: 0 };
+      return 'Added a daily login reward';
+    },
   };
   // shareGrades: off by default. claims: streak/task rewards taken. gifts: gift ids opened.
   // giftLog: coins given away today. names: names of people you've sent requests to.
@@ -222,7 +227,8 @@
       freeCases: { seed: 1 }, // every new user starts with one free Seed Pouch
       giftNotice: 'welcome',
       decor: {},
-      gardenSpots: {}, // garden view ('*' = all trees) -> { item key: [row, col] } once the user has dragged something
+      gardenSpots: {},
+      login: { last: '', days: 0 }, // daily reward: last day claimed and how many days so far // garden view ('*' = all trees) -> { item key: [row, col] } once the user has dragged something
       social: blankSocial(),
       gradeExtras: {},
       gradeTargets: {},
@@ -256,6 +262,7 @@
     const obj = (v) => v && typeof v === 'object' && !Array.isArray(v);
     out.badgeClaims = obj(x.badgeClaims) ? x.badgeClaims : {};
     out.decor = obj(x.decor) ? x.decor : {};
+    out.login = { last: obj(x.login) && typeof x.login.last === 'string' ? x.login.last : '', days: obj(x.login) && Number.isInteger(x.login.days) && x.login.days > 0 ? x.login.days : 0 };
     out.gardenSpots = {};
     if (obj(x.gardenSpots)) for (const [view, spots] of Object.entries(x.gardenSpots)) {
       if (!obj(spots)) continue;
@@ -474,7 +481,7 @@
     side.classList.toggle('nav-open', navOpen);
     let k = 0;
     $$('.nav-item').forEach((b) => {
-      const show = navOpen || b.dataset.page === 'timer' || b.dataset.page === currentPage;
+      const show = navOpen || b.dataset.page === 'timer' || b.dataset.page === 'settings' || b.dataset.page === currentPage;
       b.style.setProperty('--k', show && !b.classList.contains('nav-shown') ? k++ : 0);
       b.classList.toggle('nav-shown', show);
       b.classList.toggle('tucked', !show);
@@ -2360,7 +2367,8 @@
   }
   // flies a little gift box from an element to the Trees tab
   function flyGift(fromEl, color) {
-    const to = $('.nav-item[data-page="trees"]').getBoundingClientRect();
+    const trees = $('.nav-item[data-page="trees"]');
+    const to = (trees.classList.contains('tucked') ? $('#nav-more') : trees).getBoundingClientRect();
     const fr = fromEl.getBoundingClientRect();
     const g = document.createElement('div');
     g.className = 'flying-gift';
@@ -2374,7 +2382,7 @@
     }));
     setTimeout(() => {
       g.remove();
-      const nav = $('.nav-item[data-page="trees"]');
+      const nav = trees.classList.contains('tucked') ? $('#nav-more') : trees;
       nav.classList.remove('bump'); void nav.offsetWidth; nav.classList.add('bump');
       updateNavDots();
     }, 950);
@@ -2402,6 +2410,43 @@
     claimingAll = true;
     btns.forEach((b, i) => setTimeout(() => b.click(), i * 170));
     setTimeout(() => { claimingAll = false; if (boxes) toast(`${boxes} free case${boxes > 1 ? 's' : ''} added. Open ${boxes > 1 ? 'them' : 'it'} on the Trees page`, 3600); }, btns.length * 170 + 50);
+  }
+  // ---- daily login reward: the same every day on purpose, 10 coins, plus a Seed Pouch every third day ----
+  const DAILY_COINS = 10, DAILY_BOX_EVERY = 3;
+  let dailyWait = null;
+  function checkDaily() {
+    if (readOnly || !D || dailyWait) return;
+    const today = dayKey(new Date());
+    if (D.login.last === today) return;
+    // wait for the tutorial, a popup or a running welcome screen to finish first
+    const tour = $('#tour');
+    if ((tour && !tour.classList.contains('hidden')) || $('.modal-back') || document.body.classList.contains('booting')) {
+      dailyWait = setTimeout(() => { dailyWait = null; checkDaily(); }, 2000);
+      return;
+    }
+    D.login.last = today;
+    D.login.days += 1;
+    const box = D.login.days % DAILY_BOX_EVERY === 0;
+    D.coins += DAILY_COINS;
+    if (box) D.freeCases.seed = freeCount('seed') + 1;
+    save(true);
+    showDaily(D.login.days, box);
+  }
+  function showDaily(days, box) {
+    const pos = ((days - 1) % DAILY_BOX_EVERY) + 1;
+    const card = document.createElement('div');
+    card.className = 'login-card';
+    card.innerHTML = `<div class="lc-sun"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5.3 5.3 7 7M17 17l1.7 1.7M5.3 18.7 7 17M17 7l1.7-1.7"/></svg></div>
+      <div class="lc-txt"><b>Daily reward</b><span><span class="coin sm"></span>+${DAILY_COINS}${box ? ' and a Seed Pouch' : ''}</span></div>
+      <div class="lc-dots" title="${box ? 'Seed Pouch today' : `Seed Pouch in ${DAILY_BOX_EVERY - pos} day${DAILY_BOX_EVERY - pos === 1 ? '' : 's'}`}">${Array.from({ length: DAILY_BOX_EVERY }, (_, i) => `<i class="${i < pos ? 'on' : ''}${i === DAILY_BOX_EVERY - 1 ? ' box' : ''}" style="--i:${i}"></i>`).join('')}</div>`;
+    document.body.appendChild(card);
+    const close = () => { if (card.classList.contains('out')) return; card.classList.add('out'); setTimeout(() => card.remove(), 450); };
+    card.addEventListener('click', close);
+    setTimeout(() => {
+      flyCoins(card, DAILY_COINS);
+      if (box) setTimeout(() => { flyGift(card, CASES.find((c) => c.id === 'seed').color); updateNavDots(); }, 350);
+    }, 650);
+    setTimeout(close, 4600);
   }
   function showGiftNotice() {
     if (!D.giftNotice) return;
@@ -3462,6 +3507,7 @@
       // say so once after the app has updated itself
       if (prevVersion && prevVersion !== APP_VERSION && !readOnly && D.profile.notesSeen !== APP_VERSION) setTimeout(showWhatsNew, 900);
       if (!D.profile.tutorialSeen && !D.active) setTimeout(startTour, 1100);
+      setTimeout(checkDaily, 2600);
       if (!readOnly) {
         if (!D.badgesSeeded) {
           const n = checkAchievements(true).length;
@@ -3494,7 +3540,7 @@
     // friends load in the background; offline this just quietly does nothing
     if (window.Friends && !readOnly) setTimeout(() => window.Friends.start(), 2500);
     // refresh "today" and the greeting when the date rolls over
-    setInterval(() => { updateDayPhase(); if (currentPage === 'timer') { renderToday(); } }, 60000);
+    setInterval(() => { updateDayPhase(); if (currentPage === 'timer') { renderToday(); } checkDaily(); }, 60000);
   }
   window.__dbg = {
     get D() { return D; }, T, S,
