@@ -72,7 +72,7 @@
   // ---------------- data ----------------
   // SCHEMA is the save-file format version. Bump it and add a migration below whenever
   // the save format changes, so older saves are always upgraded instead of lost.
-  const SCHEMA = 11;
+  const SCHEMA = 12;
   const MIGRATIONS = {
     // 1 -> 2 (app 1.0.1): subjects can be archived; coins are counted per 10-minute milestone
     1: (d) => {
@@ -181,6 +181,12 @@
       if (!d.gardenSpots || typeof d.gardenSpots !== 'object') d.gardenSpots = {};
       return 'Trees and decorations can be moved around the garden';
     },
+    // 11 -> 12 (app 1.11.0): a grade can be a letter (row.letter, with row.pct set to the middle
+    // of that letter's band), and the app remembers which version's "what's new" was shown.
+    11: (d) => {
+      if (d.profile && typeof d.profile === 'object' && typeof d.profile.notesSeen !== 'string') d.profile.notesSeen = '';
+      return 'Grades can be entered as letters; a list of changes shows after each update';
+    },
   };
   // shareGrades: off by default. claims: streak/task rewards taken. gifts: gift ids opened.
   // giftLog: coins given away today. names: names of people you've sent requests to.
@@ -206,7 +212,7 @@
     return {
       version: SCHEMA,
       migrationLog: [],
-      profile: { name: '', setupDone: false, theme: 'forest', autoMini: false, tutorialSeen: false, welcome: true },
+      profile: { name: '', setupDone: false, theme: 'forest', autoMini: false, tutorialSeen: false, welcome: true, notesSeen: '' },
       collection: { owned: { oak: 1, pine: 1 }, opened: 0 },
       selectedTree: 'oak',
       favTrees: [],
@@ -266,7 +272,7 @@
     for (const [k, list] of Object.entries(out.gradeExtras)) {
       if (!Array.isArray(list)) { delete out.gradeExtras[k]; continue; }
       out.gradeExtras[k] = list.filter((r) => r && typeof r === 'object');
-      out.gradeExtras[k].forEach((r) => { if (!r.id) r.id = uid(); r.sem = r.sem === 2 ? 2 : 1; });
+      out.gradeExtras[k].forEach((r) => { if (!r.id) r.id = uid(); r.sem = r.sem === 2 ? 2 : 1; if ('letter' in r && typeof r.letter !== 'string') delete r.letter; });
     }
     out.gradeTargets = obj(x.gradeTargets) ? x.gradeTargets : {};
     out.grading = Object.assign({ scale: 'school', cuts: {} }, obj(x.grading) ? x.grading : {});
@@ -2427,6 +2433,25 @@
   const gradeColor = (g) => (g ? `hsl(${Math.round(140 - (g.i / Math.max(1, g.n - 1)) * 140)} 70% 52%)` : 'var(--muted)');
   const fmtPct = (p) => `${(Math.round(p * 10) / 10).toFixed(Math.abs(p - Math.round(p)) < 0.05 ? 0 : 1)}%`;
   const gradeTag = (p) => { const g = letterOf(p); return g ? `<span class="gtag" style="--gc:${gradeColor(g)}">${esc(g.l)}</span>` : ''; };
+  // A letter grade counts as the middle of its band: B (70 to 74) is 72, A+ (90 to 100) is 95.
+  function letterMid(l) {
+    const gs = scaleGrades(), i = gs.findIndex((g) => g.l === l);
+    if (i < 0) return null;
+    const lo = gs[i].min, hi = i === 0 ? 100 : Math.max(lo, gs[i - 1].min - 1);
+    return Math.round(((lo + hi) / 2) * 10) / 10;
+  }
+  // keep letter grades in step with the grading scale (after a scale or cut-off change)
+  function syncLetters() {
+    let changed = false;
+    allGradeRows().forEach((r) => {
+      if (typeof r.letter !== 'string') return;
+      if (!r.letter) { if (r.pct != null) { r.pct = null; changed = true; } return; }
+      const m = letterMid(r.letter);
+      if (m == null) { delete r.letter; changed = true; } // not a grade on this scale: keep it as a %
+      else if (r.pct !== m) { r.pct = m; changed = true; }
+    });
+    return changed;
+  }
 
   // ---------------- grade calculator ----------------
   // Each subject has two semesters. Rows live in D.gradeExtras[subject]: {id, name, pct, weight, sem: 1|2, exam?}.
@@ -2482,7 +2507,7 @@
     const row = (x, i) => `<div class="gi-row extra${x.exam ? ' is-exam' : ''}" style="--i:${i};--c:${color}" data-id="${x.id}"><span class="gi-ic ${x.exam ? 'exam' : 'plus'}">${x.exam ? EXAM_ICON : '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>'}</span>
           <div class="gi-name"><input class="input gi-in-name" maxlength="50" placeholder="${x.exam ? 'Exam name' : 'Assessment name'}" value="${esc(x.name || '')}"></div>
           <span class="gi-w"><span class="suffix-in sm"><input type="number" class="input gi-in-w" min="0" max="100" step="0.5" placeholder="Weight" value="${x.weight ?? ''}"><b>%</b></span></span>
-          <span class="gi-score"><span class="suffix-in sm"><input type="number" class="input gi-in-p" min="0" max="150" step="0.5" placeholder="Score" value="${x.pct ?? ''}"><b>%</b></span><span class="gi-tag">${x.pct != null ? gradeTag(x.pct) : ''}</span></span>
+          <span class="gi-score">${scoreCell(x)}</span>
           <span class="gi-act"><button class="icon-btn sm gi-move" title="Move to Semester ${other}">${MOVE_ICON}</button><button class="icon-btn sm gi-del" title="Remove">${XICON}</button></span></div>`;
     // the summary circles: each semester's average and its exams, left out when there's nothing in them
     const all = (n) => semRows(G.subject, n);
@@ -2508,6 +2533,41 @@
     requestAnimationFrame(positionSegs);
     wireGradeRows();
     renderGradeResult();
+  }
+  // a score is either a % or a letter; the small button beside it switches between the two
+  const isLetter = (x) => typeof x.letter === 'string';
+  const scoreTag = (x) => (isLetter(x) ? (x.pct != null ? `<span class="gi-mid" title="A ${esc(x.letter)} counts as ${fmtPct(x.pct)}, the middle of its band">≈${fmtPct(x.pct)}</span>` : '') : (x.pct != null ? gradeTag(x.pct) : ''));
+  function scoreCell(x) {
+    const field = isLetter(x)
+      ? `<select class="input gi-in-l" title="Letter grade"><option value="">Grade</option>${scaleGrades().map((g) => `<option value="${esc(g.l)}"${g.l === x.letter ? ' selected' : ''}>${esc(g.l)}</option>`).join('')}</select>`
+      : `<span class="suffix-in sm"><input type="number" class="input gi-in-p" min="0" max="150" step="0.5" placeholder="Score" value="${x.pct ?? ''}"><b>%</b></span>`;
+    return `${field}<button class="gi-mode" title="${isLetter(x) ? 'Enter a percentage instead' : 'Enter a letter grade instead'}">${isLetter(x) ? '%' : 'A+'}</button><span class="gi-tag">${scoreTag(x)}</span>`;
+  }
+  function wireScore(r, x) {
+    const cell = $('.gi-score', r);
+    const tag = () => { $('.gi-tag', cell).innerHTML = scoreTag(x); };
+    const num = (v) => (v.trim() === '' || !Number.isFinite(+v) ? null : Math.max(0, +v));
+    const p = $('.gi-in-p', cell), l = $('.gi-in-l', cell);
+    if (p) {
+      p.addEventListener('input', () => { x.pct = num(p.value); save(); tag(); renderGradeResult(); });
+      p.addEventListener('change', () => checkAchievements());
+    }
+    if (l) l.addEventListener('change', () => {
+      x.letter = l.value;
+      x.pct = l.value ? letterMid(l.value) : null;
+      save(); tag(); renderGradeResult(); checkAchievements();
+    });
+    $('.gi-mode', cell).addEventListener('click', () => {
+      if (isLetter(x)) delete x.letter; // back to a %: keep the number it counted as
+      else { const g = letterOf(x.pct); x.letter = g ? g.l : ''; x.pct = g ? letterMid(g.l) : null; }
+      save();
+      cell.innerHTML = scoreCell(x);
+      cell.classList.remove('swap'); void cell.offsetWidth; cell.classList.add('swap');
+      wireScore(r, x);
+      renderGradeResult();
+      const f = $('.gi-in-l, .gi-in-p', cell);
+      if (f) f.focus();
+    });
   }
   function wireGradeRows() {
     const host = $('#gr-body');
@@ -2537,8 +2597,7 @@
       if (!x) return;
       $('.gi-in-name', r).addEventListener('input', (ev) => { x.name = ev.target.value; save(); });
       $('.gi-in-w', r).addEventListener('input', (ev) => { x.weight = num(ev.target.value); if (x.weight > 100) x.weight = 100; save(); renderGradeResult(); });
-      $('.gi-in-p', r).addEventListener('input', (ev) => { x.pct = num(ev.target.value); save(); $('.gi-tag', r).innerHTML = x.pct != null ? gradeTag(x.pct) : ''; renderGradeResult(); });
-      $('.gi-in-p', r).addEventListener('change', () => checkAchievements());
+      wireScore(r, x);
       const out = (msg) => {
         save();
         r.style.height = r.offsetHeight + 'px'; r.classList.add('removing');
@@ -2611,6 +2670,7 @@
 
   // settings card: grading scale and its cut-offs
   function renderGradingSettings() {
+    if (syncLetters()) save();
     const sel = $('#set-scale');
     sel.innerHTML = Object.entries(SCALES).map(([k, s]) => `<option value="${k}"${k === D.grading.scale ? ' selected' : ''}>${s.name}</option>`).join('');
     const grades = scaleGrades();
@@ -2630,6 +2690,27 @@
       save();
       renderGradingSettings();
     }));
+  }
+
+  // ---------------- what's new (once, after the app updates itself) ----------------
+  async function showWhatsNew() {
+    D.profile.notesSeen = APP_VERSION;
+    save();
+    let notes = '';
+    try { notes = await window.api.notes(); } catch (e) {}
+    const items = String(notes || '').split(/\r?\n/).map((t) => t.trim()).filter((t) => /^[-*•]\s+/.test(t)).map((t) => t.replace(/^[-*•]\s+/, ''));
+    if (!items.length) return toast(`✨ Updated to version ${esc(APP_VERSION)}`, 4200);
+    // "Topic: details" shows the topic in bold
+    const li = (t, i) => {
+      const m = t.match(/^([^:]{2,40}):\s+(.*)$/);
+      return `<li style="--i:${i}">${m ? `<b>${esc(m[1])}:</b> ${esc(m[2])}` : esc(t)}</li>`;
+    };
+    modal({
+      title: `What's new in ${esc(APP_VERSION)}`,
+      html: '<div class="wn-badge">✨</div>',
+      extra: `<ul class="wn-list">${items.map(li).join('')}</ul>`,
+      actions: [{ label: 'Got it', primary: true }],
+    });
   }
 
   // ---------------- tutorial ----------------
@@ -3353,6 +3434,7 @@
     if (raw && before < SCHEMA) await window.api.backupBeforeUpgrade(raw, before);
     D = normalise(migrate(raw));
     if (raw && before < SCHEMA) save(true);
+    if (!readOnly && syncLetters()) save();
     $('#app-version').textContent = `Version ${APP_VERSION} · save format ${SCHEMA}`;
     applyTheme(D.profile.theme);
     makeStars();
@@ -3378,7 +3460,7 @@
       if (D.active && !resumed) toast('Your last session was paused when the app closed. Press Resume to continue', 4500);
       if (!readOnly) showGiftNotice();
       // say so once after the app has updated itself
-      if (prevVersion && prevVersion !== APP_VERSION && !readOnly) setTimeout(() => toast(`✨ Updated to version ${esc(APP_VERSION)}`, 4200), 900);
+      if (prevVersion && prevVersion !== APP_VERSION && !readOnly && D.profile.notesSeen !== APP_VERSION) setTimeout(showWhatsNew, 900);
       if (!D.profile.tutorialSeen && !D.active) setTimeout(startTour, 1100);
       if (!readOnly) {
         if (!D.badgesSeeded) {

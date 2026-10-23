@@ -167,6 +167,8 @@ app.whenReady().then(() => {
   ipcMain.handle('data:load', () => readData());
   ipcMain.handle('data:save', (_e, data) => { writeData(data); return true; });
   ipcMain.handle('app:version', () => app.getVersion());
+  // the notes for this version, shown once after an update
+  ipcMain.handle('app:notes', () => { try { return fs.readFileSync(path.join(__dirname, 'RELEASE_NOTES.md'), 'utf8'); } catch (e) { return ''; } });
   // friends (online); see social.js
   ipcMain.handle('social', (_e, op, args) => social.call(op, args));
   // Before an older save is upgraded to a new format, keep an untouched copy of it.
