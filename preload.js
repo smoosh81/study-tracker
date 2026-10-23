@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('api', {
   load: () => ipcRenderer.invoke('data:load'),
   save: (data) => ipcRenderer.invoke('data:save', data),
   version: () => ipcRenderer.invoke('app:version'),
+  notes: () => ipcRenderer.invoke('app:notes'),
   social: (op, args) => ipcRenderer.invoke('social', op, args),
   backupBeforeUpgrade: (data, fromVersion) => ipcRenderer.invoke('data:backupBeforeUpgrade', { data, fromVersion }),
   saveSync: (data) => ipcRenderer.sendSync('data:saveSync', data),

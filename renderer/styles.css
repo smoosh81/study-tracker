@@ -1022,7 +1022,7 @@ body.is-night .bfly { display: none; }
 .grades-layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; align-items: start; }
 @media (max-width: 1100px) { .grades-layout { grid-template-columns: 1fr; } }
 .gr-side { display: flex; flex-direction: column; gap: 18px; }
-.gi-head, .gi-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) 100px 140px 62px; align-items: center; gap: 10px; }
+.gi-head, .gi-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) 100px 176px 62px; align-items: center; gap: 10px; }
 .gi-head { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); font-weight: 700; padding: 0 10px 6px; }
 .gi-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .gi-row { padding: 8px 10px; border-radius: 12px; background: var(--surface2); animation: fadeUp .45s var(--ease) both; animation-delay: calc(var(--i) * 40ms); transition: background .25s, transform .3s var(--spring); }
@@ -1177,3 +1177,21 @@ body.is-night .plot .tile.drop { fill: #efe08a; }
   100% { transform: none; }
 }
 .gs-hint { color: var(--muted); }
+
+/* ---- grades: a score can be a % or a letter (1.11.0) ---- */
+.gi-score .gi-in-l { width: 86px; padding: 6px 9px; font-size: 13px; font-weight: 700; cursor: pointer; }
+.gi-mode { flex-shrink: 0; min-width: 28px; height: 26px; padding: 0 6px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font: 700 11px var(--font-display, inherit); cursor: pointer; transition: color .2s, border-color .2s, transform .25s var(--spring), background .2s; }
+.gi-mode:hover { color: var(--text); border-color: color-mix(in srgb, var(--c, var(--accent)) 60%, transparent); transform: translateY(-1px); }
+.gi-mode:active { transform: scale(.92); }
+.gi-mid { font-size: 12px; font-weight: 650; color: var(--muted); white-space: nowrap; }
+.gi-score.swap > .suffix-in, .gi-score.swap > select { animation: giSwap .4s var(--spring); }
+@keyframes giSwap { from { opacity: 0; transform: rotateX(70deg) scale(.9); } to { opacity: 1; transform: none; } }
+
+/* ---- what's new after an update ---- */
+.modal:has(.wn-list) { width: min(480px, 92vw); }
+.wn-badge { font-size: 34px; line-height: 1; animation: wnPop .7s var(--spring) .1s both; }
+@keyframes wnPop { from { transform: scale(.2) rotate(-30deg); opacity: 0; } to { transform: none; opacity: 1; } }
+.wn-list { list-style: none; margin: 4px 0 0; padding: 0; width: 100%; display: flex; flex-direction: column; gap: 8px; text-align: left; max-height: 52vh; overflow: auto; }
+.wn-list li { position: relative; padding: 9px 12px 9px 32px; border-radius: 12px; background: var(--surface2); font-size: 13.5px; line-height: 1.45; color: var(--muted); animation: fadeUp .45s var(--ease) both; animation-delay: calc(220ms + var(--i) * 80ms); }
+.wn-list li b { color: var(--text); font-weight: 700; }
+.wn-list li::before { content: ''; position: absolute; left: 13px; top: 15px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); }
