@@ -126,8 +126,17 @@
       v: 1, coins: d.coins, trees: C.totalTrees(), withered: C.witheredCount(), owned: d.collection.owned, opened: d.collection.opened || 0,
       badges: d.achievements, total: counted.reduce((a, s) => a + s.duration, 0), longest: counted.reduce((m, s) => Math.max(m, s.duration), 0),
       count: counted.length, streak: C.streakDays(), subjects, sessions, days: myDays(), decor: d.decor,
+      show: myShowcase(), live: liveNow(),
     });
   }
+  // what I'm doing right now, for the online / studying dot friends see
+  function liveNow() {
+    const a = D().active;
+    if (!a) return null;
+    return { s: a.subject, c: C.colorOf(a.subject), e: Math.floor(C.elapsedSec()), t: new Date().toISOString(), p: a.segStart ? 0 : 1 };
+  }
+  // up to 3 earned badges picked to show next to my name
+  const myShowcase = () => (Array.isArray(S().showcase) ? S().showcase : []).filter((id) => D().achievements[id]).slice(0, 3);
   function gradesData() {
     if (!S().shareGrades) return '';
     return JSON.stringify(C.gradeSummary());
@@ -186,7 +195,7 @@
     C.checkAchievements();
     if (C.currentPage() === 'friends') paint();
   }
-  let bgTimer = null;
+  let bgTimer = null, pingTimer = null, fastTimer = null;
   async function start() {
     const st = await call('status');
     F.configured = !!(st.ok && st.value && st.value.configured);
@@ -196,6 +205,97 @@
     await refresh({ notify: true });
     clearInterval(bgTimer);
     bgTimer = setInterval(() => { refresh({ notify: true }); }, 6 * 60 * 1000);
+    // tell friends I'm online every 2 minutes (skipped when a full update just went out)
+    clearInterval(pingTimer);
+    pingTimer = setInterval(() => { if (!C.readOnly() && Date.now() - lastPub > 100000) call('ping'); }, 2 * 60 * 1000);
+    // while the Friends tab is open, check on friends more often so online dots stay fresh
+    clearInterval(fastTimer);
+    fastTimer = setInterval(() => { if (C.currentPage() === 'friends' && !document.hidden && Date.now() - F.loadedAt > 80000) refresh(); }, 30000);
+  }
+
+  // ---------------- online now ----------------
+  const ONLINE_MS = 5 * 60 * 1000;
+  function presence(f) {
+    const info = f.info || {};
+    const seen = f.updated ? Date.parse(f.updated) : 0;
+    const online = seen && Date.now() - seen < ONLINE_MS;
+    const live = info.live && typeof info.live === 'object' ? info.live : null;
+    if (online && live && !live.p) {
+      const sec = (+live.e || 0) + Math.max(0, (Date.now() - Date.parse(live.t || f.updated)) / 1000);
+      return { k: 'studying', rank: 0, t: `Studying ${shownSubject(live.s)}`, long: C.fmtDur(sec), c: live.c };
+    }
+    if (online && live) return { k: 'break', rank: 1, t: 'On a break' };
+    if (online) return { k: 'online', rank: 2, t: 'Online' };
+    return { k: 'off', rank: 3, t: seen ? `Last on ${ago(f.updated)}` : 'Offline' };
+  }
+  const shownSubject = (n) => C.esc(String(n || 'something').slice(0, 40));
+  const presDot = (p) => `<i class="fr-pres ${p.k}" title="${p.k === 'studying' ? `${p.t} · ${p.long}` : p.t}"></i>`;
+
+  // ---------------- showcase badges ----------------
+  function showBadges(ids, earned, key, size = '') {
+    const list = (Array.isArray(ids) ? ids : []).map((id) => C.BADGES.find((b) => b.id === id)).filter((b) => b && (!earned || earned[b.id])).slice(0, 3);
+    if (!list.length) return '';
+    return `<span class="fr-show ${size}">${list.map((b, i) => `<span class="fr-mini t-${b.tier}" style="--i:${i};--tc:${C.TIERS[b.tier][1]}" title="${C.esc(b.name)}">${C.badgeSvg(b, `${key}${i}${b.id}`)}</span>`).join('')}</span>`;
+  }
+  function pickBadge(slot) {
+    const got = D().achievements || {};
+    const cur = myShowcase();
+    const earned = C.BADGES.filter((b) => got[b.id]);
+    const back = document.createElement('div');
+    back.className = 'modal-back';
+    back.innerHTML = `<div class="modal fr-pick"><h2>Pick a badge to show</h2><p>Friends see it next to your name.</p>
+      ${earned.length ? `<div class="fr-pick-grid">${earned.map((b, i) => `<button class="fr-pick-b t-${b.tier}${cur.includes(b.id) ? ' on' : ''}" style="--i:${i};--tc:${C.TIERS[b.tier][1]}" data-id="${b.id}"><span class="fr-pick-art">${C.badgeSvg(b, 'pk' + b.id)}</span><span>${C.esc(b.name)}</span></button>`).join('')}</div>` : '<p class="muted">You haven\'t earned any badges yet. They\'re on the Badges tab.</p>'}
+      <div class="m-actions">${cur[slot] ? '<button class="btn ghost" data-x="remove">Remove</button>' : ''}<button class="btn" data-x="close">Close</button></div></div>`;
+    const close = () => { back.classList.add('closing'); setTimeout(() => back.remove(), 260); document.removeEventListener('keydown', esc); };
+    const esc = (e) => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', esc);
+    const set = (list) => { S().showcase = list.slice(0, 3); C.save(); schedulePublish(1500); close(); paint(); };
+    back.addEventListener('mousedown', (e) => { if (e.target === back) close(); });
+    $$('.fr-pick-b', back).forEach((b) => b.addEventListener('click', () => {
+      // picking one that's already shown swaps it into this slot
+      const arr = [cur[0], cur[1], cur[2]], at = arr.indexOf(b.dataset.id);
+      if (at >= 0) arr[at] = arr[slot];
+      arr[slot] = b.dataset.id;
+      set(arr.filter(Boolean));
+    }));
+    $$('[data-x]', back).forEach((b) => b.addEventListener('click', () => {
+      if (b.dataset.x === 'remove') set(cur.filter((_, i) => i !== slot)); else close();
+    }));
+    $('#modal-host').appendChild(back);
+  }
+  function showcaseCard(i) {
+    const got = D().achievements || {};
+    const cur = myShowcase();
+    return `<div class="card fr-showcase stagger" style="--i:${i}">
+      <div class="card-head"><h3>Show off your badges</h3><span class="muted">Friends see these next to your name</span></div>
+      <div class="fr-slots">${[0, 1, 2].map((k) => {
+        const b = C.BADGES.find((x) => x.id === cur[k]);
+        return b && got[b.id] ? `<button class="fr-slot full t-${b.tier}" style="--i:${k};--tc:${C.TIERS[b.tier][1]}" data-slot="${k}" title="Change"><span class="fr-slot-art">${C.badgeSvg(b, 'sl' + k + b.id)}</span><span class="fr-slot-name">${C.esc(b.name)}</span></button>`
+          : `<button class="fr-slot" style="--i:${k}" data-slot="${k}"><span class="fr-slot-plus">+</span><span class="fr-slot-name">Pick a badge</span></button>`;
+      }).join('')}</div>
+    </div>`;
+  }
+
+  // ---------------- weekly leaderboard ----------------
+  const hrs = (sec) => `${(sec / 3600).toFixed(1)} h`;
+  function leaderboardCard(mutual, i) {
+    const rows = [{ me: true, uid: F.me || 'me', name: D().profile.name, sec: personWeek(myDays(10)).sec, show: myShowcase(), earned: D().achievements }]
+      .concat(mutual.map((f) => ({ f, uid: f.uid, name: f.name, sec: personWeek((f.info || {}).days || {}).sec, show: (f.info || {}).show, earned: (f.info || {}).badges || {} })))
+      .sort((a, b) => b.sec - a.sec || (a.me ? -1 : 1));
+    const top = Math.max(60, rows[0].sec);
+    return `<div class="card fr-board stagger" style="--i:${i}">
+      <div class="card-head"><h3>This week's leaderboard</h3><span class="muted">Hours studied since Monday</span></div>
+      <div class="fr-board-list">${rows.map((r, k) => {
+        const p = r.f ? presence(r.f) : null;
+        return `<${r.f ? 'button' : 'div'} class="fr-board-row${r.me ? ' me' : ''}${k < 3 && r.sec > 0 ? ` m${k + 1}` : ''}" style="--i:${k};--w:${Math.max(2, (r.sec / top) * 100).toFixed(1)}%"${r.f ? ` data-uid="${C.esc(r.uid)}"` : ''}>
+          <span class="fr-rank">${k + 1}</span>
+          <span class="fr-av-wrap">${avatar(r.name, r.uid, 'sm2')}${p ? presDot(p) : ''}</span>
+          <span class="fr-board-name"><b>${C.esc(r.me ? 'You' : shownName(r.name))}</b>${showBadges(r.show, r.earned, 'lb' + k, 'tiny')}</span>
+          <span class="fr-board-bar"><i></i></span>
+          <span class="fr-board-h">${hrs(r.sec)}</span>
+        </${r.f ? 'button' : 'div'}>`;
+      }).join('')}</div>
+    </div>`;
   }
 
   // ---------------- streaks ----------------
@@ -350,7 +450,7 @@
       return;
     }
     if (F.view) return paintProfile(host, fresh);
-    const mutual = F.friends.filter((f) => f.mutual), waiting = F.friends.filter((f) => !f.mutual);
+    const mutual = F.friends.filter((f) => f.mutual).sort((a, b) => presence(a).rank - presence(b).rank), waiting = F.friends.filter((f) => !f.mutual);
     const reqs = F.inbox.filter((x) => x.type === 'request' && !F.friends.some((f) => f.uid === x.from && f.mutual));
     const gifts = F.inbox.filter((x) => x.type === 'gift');
     const nm = cleanName(D().profile.name);
@@ -371,8 +471,10 @@
           <p class="muted tiny-note">Friends you add can see your name, coins, trees, badges and study sessions. Grades stay private unless you switch this on.</p>
         </div>
       </div>
+      ${showcaseCard(i++)}
       ${reqs.length ? `<div class="card stagger" style="--i:${i++}"><div class="card-head"><h3>Friend requests</h3></div><div class="fr-reqs">${reqs.map((r, k) => `<div class="fr-req" style="--i:${k}" data-id="${C.esc(r.id)}">${avatar(r.name, r.from)}<span class="fr-req-name"><b>${C.esc(shownName(r.name))}</b><small>${C.esc(r.code || '')} wants to be friends</small></span><button class="btn ghost small" data-a="no">Not now</button><button class="btn primary small" data-a="yes">Accept</button></div>`).join('')}</div></div>` : ''}
       ${gifts.length ? `<div class="card stagger fr-gifts-card" style="--i:${i++}"><div class="card-head"><h3>Gifts for you</h3><span class="muted">Click a gift to open it</span></div><div class="fr-gifts">${gifts.map((g, k) => `<button class="fr-gift" style="--i:${k};--cc:${g.kind === 'case' ? C.caseColor(g.box) : '#fbbf24'}" data-id="${C.esc(g.id)}"><span class="fr-gift-box"><i class="lid"></i><i class="body"></i><i class="ribbon"></i></span><span class="fr-gift-from">From <b>${C.esc(shownName(g.name))}</b></span></button>`).join('')}</div></div>` : ''}
+      ${mutual.length ? leaderboardCard(mutual, i++) : ''}
       <div class="card stagger" style="--i:${i++}">
         <div class="card-head"><h3>Your friends${mutual.length ? ` · ${mutual.length}` : ''}</h3><button class="btn small ghost" id="fr-refresh"${F.loading ? ' disabled' : ''}><svg viewBox="0 0 24 24" class="${F.loading ? 'spin' : ''}"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>${F.loading ? 'Loading' : 'Refresh'}</button></div>
         ${!F.loadedAt && F.loading ? '<div class="fr-grid">' + '<div class="fr-card skel"></div>'.repeat(3) + '</div>'
@@ -387,12 +489,13 @@
     const week = personWeek(info.days || {}).sec;
     const today = (info.days && info.days[todayKey()]) ? info.days[todayKey()][0] : 0;
     const dots = streakClaimable(f).length + tasksClaimable(f) + (f.streak && f.streak.status === 'pending' && f.streak.by !== F.me ? 1 : 0);
-    return `<button class="fr-card" style="--i:${k}" data-uid="${C.esc(f.uid)}">
+    const p = presence(f);
+    return `<button class="fr-card pres-${p.k}" style="--i:${k}" data-uid="${C.esc(f.uid)}">
       ${dots ? `<i class="ndot">${dots}</i>` : ''}
-      <span class="fr-card-top">${avatar(f.name, f.uid)}<span class="fr-card-name"><b>${C.esc(shownName(f.name))}</b><small>${C.esc(f.code || '')}</small></span>
+      <span class="fr-card-top"><span class="fr-av-wrap">${avatar(f.name, f.uid)}${presDot(p)}</span><span class="fr-card-name"><span class="fr-name-row"><b>${C.esc(shownName(f.name))}</b>${showBadges(info.show, info.badges, 'fc' + k)}</span><small>${C.esc(f.code || '')}</small></span>
       ${si && si.n ? `<span class="fr-flame${si.todayDone ? ' lit' : ''}" title="${si.n} day streak">${flameSvg()}<b>${si.n}</b></span>` : f.streak && f.streak.status === 'pending' ? '<span class="fr-chip">Streak invite</span>' : ''}</span>
       <span class="fr-card-stats"><span><small>This week</small><b>${C.fmtDur(week)}</b></span><span><small>Trees</small><b>${info.trees || 0}</b></span><span><small>Coins</small><b>${(info.coins || 0).toLocaleString()}</b></span></span>
-      <span class="fr-today${today >= 600 ? ' on' : ''}">${today >= 600 ? `Studied ${C.fmtDur(today)} today` : 'Hasn\'t studied yet today'}</span>
+      <span class="fr-status ${p.k}"${p.c ? ` style="--sc:${C.esc(p.c)}"` : ''}>${p.k === 'studying' ? `<b>${p.t}</b> · ${p.long}` : `${p.t}${today >= 600 ? ` · studied ${C.fmtDur(today)} today` : ''}`}</span>
     </button>`;
   }
   function waitingCard(f, k) {
@@ -488,6 +591,8 @@
     })));
     $$('.fr-gift', host).forEach((g) => g.addEventListener('click', () => openGift(g)));
     $$('.fr-card[data-uid]', host).forEach((c) => c.addEventListener('click', () => openProfile(c.dataset.uid)));
+    $$('.fr-board-row[data-uid]', host).forEach((c) => c.addEventListener('click', () => openProfile(c.dataset.uid)));
+    $$('.fr-slot', host).forEach((c) => c.addEventListener('click', () => pickBadge(+c.dataset.slot)));
     $$('[data-cancel]', host).forEach((b) => b.addEventListener('click', async () => {
       b.disabled = true;
       const r = await call('removeFriend', { uid: b.dataset.cancel, name: myName() });
@@ -550,8 +655,8 @@
     host.innerHTML = `
       <div class="fr-prof-head stagger" style="--i:1">
         <button class="icon-btn" id="fr-back" title="Back to friends"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
-        ${avatar(f.name, f.uid, 'big')}
-        <div class="fr-prof-name"><h2>${C.esc(shownName(f.name))}</h2><span class="muted">${C.esc(f.code || '')}${f.updated ? ` · active ${ago(f.updated)}` : ''}</span></div>
+        <span class="fr-av-wrap big">${avatar(f.name, f.uid, 'big')}${presDot(presence(f))}</span>
+        <div class="fr-prof-name"><h2>${C.esc(shownName(f.name))}${showBadges(info.show, info.badges, 'ph', 'big')}</h2><span class="muted">${C.esc(f.code || '')} · ${(() => { const p = presence(f); return p.k === 'studying' ? `${p.t} · ${p.long}` : p.t; })()}</span></div>
         <div class="head-stats">
           <div class="mini-stat"><span class="ms-label">Coins</span><span class="ms-val"><span class="coin sm"></span> ${(info.coins || 0).toLocaleString()}</span></div>
           <div class="mini-stat"><span class="ms-label">Trees</span><span class="ms-val">${info.trees || 0}</span></div>
@@ -876,6 +981,8 @@
     init(ctx) { C = ctx; const el = $('#fr-code'); if (el) el.addEventListener('click', copyCode); },
     start, render, free, refresh, cleanName, isBadName, badgeMetrics, pending,
     changed: () => schedulePublish(),
+    // the timer started, paused or stopped: tell friends soon, not in 2 minutes
+    live: () => schedulePublish(1500),
     get state() { return F; },
   };
 })();

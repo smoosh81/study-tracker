@@ -4,8 +4,8 @@
 
   // ---------------- constants ----------------
   const ROOT_SEC = 600;              // 10 minutes for a tree to take root
-  // Coins (since 1.3.0): 1 coin per minute studied, paid once the tree takes root at 10 minutes
-  // (so rooting pays 10 at once), plus a 5 coin bonus at every full hour. Rare trees multiply it.
+  // Coins: 1 per minute studied plus a 5 coin bonus for every full hour, times the tree's rarity boost.
+  // Nothing under 10 minutes. Since 1.13.0 they're paid in one go when the session is finished and saved.
   const HOUR_BONUS = 5;
   function coinsFor(sec, species) {
     if (sec < ROOT_SEC) return 0;
@@ -72,7 +72,7 @@
   // ---------------- data ----------------
   // SCHEMA is the save-file format version. Bump it and add a migration below whenever
   // the save format changes, so older saves are always upgraded instead of lost.
-  const SCHEMA = 13;
+  const SCHEMA = 14;
   const MIGRATIONS = {
     // 1 -> 2 (app 1.0.1): subjects can be archived; coins are counted per 10-minute milestone
     1: (d) => {
@@ -192,10 +192,16 @@
       if (!d.login || typeof d.login !== 'object') d.login = { last: '', days: 0 };
       return 'Added a daily login reward';
     },
+    // 13 -> 14 (app 1.13.0): pick up to 3 badges to show friends. Session coins are now paid when a
+    // session is saved, and each session grows one tree; both are worked out, so no data changes.
+    13: (d) => {
+      if (d.social && typeof d.social === 'object' && !Array.isArray(d.social.showcase)) d.social.showcase = [];
+      return 'Badges to show friends; coins paid when a session is saved; one tree per session';
+    },
   };
   // shareGrades: off by default. claims: streak/task rewards taken. gifts: gift ids opened.
   // giftLog: coins given away today. names: names of people you've sent requests to.
-  function blankSocial() { return { shareGrades: false, claims: {}, gifts: {}, giftLog: { day: '', spent: 0 }, names: {}, bestStreak: 0, friendsMax: 0 }; }
+  function blankSocial() { return { shareGrades: false, claims: {}, gifts: {}, giftLog: { day: '', spent: 0 }, names: {}, bestStreak: 0, friendsMax: 0, showcase: [] }; }
   let readOnly = false; // true if the save came from a newer version of the app
   function migrate(raw) {
     if (!raw || typeof raw !== 'object') return raw;
@@ -274,6 +280,7 @@
     ['claims', 'gifts', 'names'].forEach((k) => { if (!obj(out.social[k])) out.social[k] = {}; });
     if (!obj(out.social.giftLog)) out.social.giftLog = { day: '', spent: 0 };
     out.social.shareGrades = out.social.shareGrades === true;
+    out.social.showcase = Array.isArray(out.social.showcase) ? out.social.showcase.filter((id) => typeof id === 'string').slice(0, 3) : [];
     out.freeCases = obj(x.freeCases) ? x.freeCases : {};
     out.gradeExtras = obj(x.gradeExtras) ? x.gradeExtras : {};
     for (const [k, list] of Object.entries(out.gradeExtras)) {
@@ -323,9 +330,9 @@
   }
   // a session's tree: the one it grew, or for older/manual sessions a plain oak
   const treeOfSession = (s) => s.tree || 'oak';
-  // A session grows one tree for every full 30 minutes: 1 once it takes root, 2 at an hour, 4 at two hours (12 at most).
-  const TREE_EVERY = 30 * 60;
-  const treesForSec = (sec) => Math.min(12, Math.max(1, Math.floor((sec || 0) / TREE_EVERY)));
+  // One tree per session (1.8.0 to 1.12.0 grew one per half hour; the user asked to go back to one).
+  // Counts are worked out from each session, so older long sessions show one tree too.
+  const treesForSec = () => 1;
   const treeCountOf = (t) => treesForSec(t.duration);
   const totalTrees = () => D.trees.reduce((a, t) => a + treeCountOf(t), 0);
   const isWithered = (s) => s.outcome ? s.outcome === 'withered' : s.duration < ROOT_SEC;
@@ -765,6 +772,8 @@
   }
 
   function setTimerClass() {
+    // friends see when I'm studying, so let them know straight away
+    if (window.Friends && window.Friends.live && T.lastClass !== T.state) { if (T.lastClass !== undefined) window.Friends.live(); T.lastClass = T.state; }
     const card = $('#page-timer');
     card.classList.toggle('idle', T.state === 'idle');
     card.classList.toggle('running', T.state === 'running');
@@ -799,27 +808,24 @@
     setOdometer(fmtHMS(whole));
     const rootP = Math.min(1, sec / ROOT_SEC);
     const ring = $('.ring');
-    // first lap: the 10 minute rooting countdown; after that: one lap per hour
-    let lap;
-    if (sec < ROOT_SEC) lap = rootP;
-    else lap = ((sec - ROOT_SEC) % 3600) / 3600;
-    ring.classList.toggle('rooted', sec >= ROOT_SEC);
+    // the ring goes round once an hour; each hour has its own colours and laps over the one before
+    const hr = Math.floor(sec / 3600), lap = (sec % 3600) / 3600;
     // when a lap wraps round, jump instead of animating backwards
     const wrapped = T.lastLap !== undefined && lap < T.lastLap - 0.3;
     T.lastLap = lap;
     if (wrapped || force) ring.classList.add('snap');
-    $('#ring-prog').style.strokeDashoffset = (CIRC * (1 - (sec >= ROOT_SEC ? 1 : lap))).toFixed(1);
-    $('#ring-hour').style.strokeDashoffset = (CIRC * (1 - (sec >= ROOT_SEC ? lap : 0))).toFixed(1);
-    $('#ring-hour').style.opacity = sec >= ROOT_SEC ? 0.95 : 0;
+    paintRing(hr, lap, T.state !== 'idle', wrapped && !force);
     $('#ring-knob').style.transform = `rotate(${(lap * 360).toFixed(2)}deg)`;
     $('#root-fill').style.transform = `scaleX(${rootP.toFixed(4)})`;
+    // the root bar is only for the first 10 minutes; it tucks away once the tree has rooted
+    $('.tree-info').classList.toggle('rooted', T.state !== 'idle' && sec >= ROOT_SEC);
     if (ring.classList.contains('snap')) { void ring.getBoundingClientRect(); requestAnimationFrame(() => ring.classList.remove('snap')); }
     const cap = $('#clock-caption');
     if (T.state === 'idle') cap.textContent = T.subject ? `Ready: ${T.subject}` : 'Pick a subject to begin';
     else if (sec < ROOT_SEC) cap.textContent = `${fmtMS(ROOT_SEC - sec)} until your tree takes root`;
     else {
       const next = 3600 - (sec % 3600);
-      cap.textContent = next <= 600 ? `Hour bonus in ${fmtMS(next)}` : `+1 coin every minute · ${D.active.coins || 0} so far`;
+      cap.textContent = next <= 600 ? `Hour bonus in ${fmtMS(next)}` : `${coinsFor(sec, D.active.species).toLocaleString()} coins when you finish`;
     }
     if (treeSvg && D.active) {
       const g = window.Tree.growthFor(sec);
@@ -831,66 +837,71 @@
       if (sec < 20) setTreeStatus(T.state === 'paused' ? 'Paused. Your seed is waiting' : 'A seed has been planted');
       else if (sec < ROOT_SEC * 0.4) setTreeStatus(T.state === 'paused' ? 'Paused. Your sprout is waiting' : 'Sprouting...');
       else if (sec < ROOT_SEC) setTreeStatus(T.state === 'paused' ? 'Paused. Your sapling is waiting' : 'Your sapling is growing');
-      else {
-        const n = treesForSec(sec), next = Math.ceil(((n + 1) * TREE_EVERY - sec) / 60) * 60;
-        setTreeStatus(`${n} tree${n === 1 ? '' : 's'} in your garden${n < 12 ? ` · another in ${fmtDur(next)}` : ' · a whole grove!'}`);
-      }
+      else setTreeStatus(T.state === 'paused' ? 'Paused. Your tree has taken root' : 'Your tree has taken root and keeps growing');
     }
     checkMilestones(sec);
     updateTodayHeader();
     pushMini();
   }
 
+  // rooting and hour marks during a session. Coins are only added up here; they're paid when the session is saved.
   function checkMilestones(sec) {
     const a = D.active;
     if (!a || T.state === 'idle') return;
-    // every 30 minutes past the first, the session plants another tree
-    if (a.rooted && treesForSec(sec) > (a.trees || 1)) {
-      a.trees = treesForSec(sec);
-      const t = D.trees.find((x) => x.id === a.treeId);
-      if (t) t.duration = Math.floor(sec);
-      if (currentPage === 'timer' && !document.hidden) {
-        const r = $('#tree-holder').getBoundingClientRect();
-        burst(r.left + r.width / 2, r.top + r.height * 0.4, { n: 45, up: true, speed: 7 });
-        treeSvg.classList.remove('celebrate'); void treeSvg.getBBox(); treeSvg.classList.add('celebrate');
-      }
-      toast(`🌳 Another tree! This session has grown ${a.trees} trees`);
-      save();
-      checkAchievements();
-    }
-    const target = coinsFor(sec, a.species);
-    if (target <= (a.coins || 0)) {
-      if (a.rooted) { const t = D.trees.find((x) => x.id === a.treeId); if (t) t.duration = Math.floor(sec); }
-      return;
-    }
-    const earned = target - (a.coins || 0);
-    const hours = Math.floor(sec / 3600);
-    const hourBonus = hours > (a.hours || 0);
-    a.hours = hours;
-    a.milestones = Math.floor(sec / 60); // kept so older versions can still read an unfinished session
-    D.coins += earned;
-    a.coins = (a.coins || 0) + earned;
     const holder = $('#tree-holder');
     const onTimer = currentPage === 'timer' && !document.hidden;
-    if (!a.rooted) {
+    if (!a.rooted && sec >= ROOT_SEC) {
       a.rooted = true;
       a.trees = 1;
+      a.hours = Math.floor(sec / 3600);
       D.trees.push({ id: a.treeId, species: a.species, subject: a.subject, date: a.startedAt, duration: Math.floor(sec), sessionId: a.sessionId });
       if (onTimer) {
         const r = holder.getBoundingClientRect();
         burst(r.left + r.width / 2, r.top + r.height * 0.4, { n: 60, up: true, speed: 8 });
         treeSvg.classList.remove('celebrate'); void treeSvg.getBBox(); treeSvg.classList.add('celebrate');
       }
-      toast(`<span class="coin"></span> Your tree took root! +${earned} coins`);
-    } else if (hourBonus) {
-      if (onTimer) { const r = holder.getBoundingClientRect(); burst(r.left + r.width / 2, r.top + r.height * 0.4, { n: 40, up: true, speed: 7, colors: ['#fde047', '#fbbf24', '#ffffff'] }); }
-      toast(`<span class="coin"></span> Hour bonus! +${earned} coins`);
+      toast('🌱 Your tree took root! Finish the session to collect your coins');
+      save();
+      checkAchievements();
     }
-    const t = D.trees.find((x) => x.id === a.treeId);
-    if (t) t.duration = Math.floor(sec);
-    save();
-    if (onTimer) flyCoins(holder, earned); else renderCoins();
-    checkAchievements();
+    const hours = Math.floor(sec / 3600);
+    if (a.rooted && hours > (a.hours || 0)) {
+      a.hours = hours;
+      a.milestones = Math.floor(sec / 60); // kept so older versions can still read an unfinished session
+      if (onTimer) { const r = holder.getBoundingClientRect(); burst(r.left + r.width / 2, r.top + r.height * 0.4, { n: 40, up: true, speed: 7, colors: ['#fde047', '#fbbf24', '#ffffff'] }); }
+      toast(`<span class="coin"></span> ${hours} hour${hours === 1 ? '' : 's'}! +${HOUR_BONUS} bonus coins when you finish`);
+      save();
+    }
+    if (a.rooted) { const t = D.trees.find((x) => x.id === a.treeId); if (t) t.duration = Math.floor(sec); }
+  }
+
+  // ---- the timer ring: one lap an hour, coloured from start to end so the colour tells the minute ----
+  const RING_HUES = [null, ['#38bdf8', '#818cf8'], ['#f472b6', '#fb923c'], ['#facc15', '#4ade80'], ['#a78bfa', '#22d3ee'], ['#f87171', '#fbbf24']];
+  function ringColors(h) {
+    const pair = RING_HUES[h % RING_HUES.length];
+    if (pair) return pair;
+    const cs = getComputedStyle(document.body);
+    return [cs.getPropertyValue('--accent').trim() || '#4ade80', cs.getPropertyValue('--accent2').trim() || '#a3e635'];
+  }
+  function mixHex(a, b, t) {
+    const rgb = (h) => { h = h.replace('#', ''); if (h.length === 3) h = h.replace(/./g, '$&$&'); return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16)); };
+    const x = rgb(a), y = rgb(b);
+    return '#' + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, '0')).join('');
+  }
+  function paintRing(h, lap, on, wrapped) {
+    const cur = $('#ring-cur'), under = $('#ring-under'), knob = $('#ring-knob');
+    if (!on) { cur.style.background = 'none'; under.style.background = 'none'; under.classList.remove('on'); return; }
+    const [a, b] = ringColors(h), deg = (lap * 360).toFixed(2), end = mixHex(a, b, lap);
+    cur.style.background = `conic-gradient(${a} 0deg, ${end} ${deg}deg, transparent ${deg}deg)`;
+    cur.style.setProperty('--glow', end);
+    knob.style.stroke = end;
+    if (h > 0) {
+      const [pa, pb] = ringColors(h - 1);
+      under.style.background = `conic-gradient(${pa}, ${pb})`;
+      under.classList.add('on');
+    } else { under.style.background = 'none'; under.classList.remove('on'); }
+    // a new hour: the finished lap settles underneath and the new colour starts over it
+    if (wrapped) { const w = $('.clock-wrap'); w.classList.remove('lap'); void w.offsetWidth; w.classList.add('lap'); }
   }
 
   function loop() {
@@ -983,22 +994,26 @@
     const rooted = D.active.rooted;
     const ok = await modal({
       title: 'Finish this session?',
-      body: rooted ? `You studied ${D.active.subject} for ${fmtDur(sec)}. It'll be saved and ${treesForSec(sec) === 1 ? 'your tree stays' : `your ${treesForSec(sec)} trees stay`} in your garden.`
+      body: rooted ? `You studied ${D.active.subject} for ${fmtDur(sec)}. It'll be saved, your tree stays in your garden, and you'll get ${Math.max(0, coinsFor(sec, D.active.species) - (D.active.coins || 0))} coins.`
         : `You studied ${D.active.subject} for ${fmtDur(sec)}. The time will be saved, but your sapling needed 10 minutes to take root, so it will wither.`,
       actions: [{ label: 'Keep studying', ghost: true, value: false }, { label: 'Finish & save', primary: true, value: true }],
     });
     if (!ok) { if (wasRunning) resume(); return; }
     const total = Math.floor(elapsedSec());
     const a = finishActive();
+    // the session's coins, paid now in one go (minus anything an older version already paid out)
+    const earned = Math.max(0, coinsFor(total, a.species) - (a.coins || 0));
+    a.coins = (a.coins || 0) + earned;
+    D.coins += earned;
     recordSession(a, total, false);
     if (a.rooted) {
       const t = D.trees.find((x) => x.id === a.treeId);
       if (t) t.duration = total;
-      const r = $('#tree-holder').getBoundingClientRect();
+      const holder = $('#tree-holder'), r = holder.getBoundingClientRect();
       burst(r.left + r.width / 2, r.top + r.height * 0.4, { n: 50, up: true, speed: 7, colors: ['#fde047', '#fbbf24', '#ffffff', colorOf(a.subject)] });
       setTreeStatus('Planted in your garden');
-      const n = treesForSec(total);
-      toast(`Saved ${fmtDur(total)} of ${esc(a.subject)}. ${n === 1 ? 'Your tree is' : `Your ${n} trees are`} in the garden 🌳`);
+      toast(`Saved ${fmtDur(total)} of ${esc(a.subject)}. ${earned ? `<span class="coin"></span> +${earned} coins · ` : ''}Your tree is in the garden 🌳`, 3600);
+      if (earned) { if (currentPage === 'timer' && !document.hidden) flyCoins(holder, earned); else renderCoins(); }
     } else {
       witherTree();
       setTreeStatus('Your sapling withered. Stay 10 minutes next time');
@@ -1019,7 +1034,7 @@
       if (wasRunning) pause();
       const ok = await modal({
         title: 'Cancel this session?',
-        body: rooted ? 'This session\'s time won\'t be saved. Your tree already took root, so it stays in your garden.'
+        body: rooted ? 'This session\'s time won\'t be saved and you won\'t get its coins. Your tree already took root, so it stays in your garden.'
           : 'This session\'s time won\'t be saved and your sapling will die.',
         actions: [{ label: 'Keep studying', ghost: true, value: false }, { label: 'Cancel session', danger: true, value: true }],
       });
@@ -1724,6 +1739,64 @@
     renderBars(fresh);
     renderHBars(ranked);
     renderStatsPlot(list, a);
+    renderStudyClock(fresh);
+  }
+  // The time of day you usually study: an average of the clock time of every minute studied in the
+  // last 30 days (worked out on a circle, so 11 pm and 1 am average to midnight, not midday).
+  function studyTimes() {
+    const since = Date.now() - 30 * 864e5;
+    const bins = new Array(24).fill(0);
+    let x = 0, y = 0, total = 0;
+    D.sessions.filter((s) => counted(s) && s.duration > 0 && new Date(s.date).getTime() >= since).forEach((s) => {
+      const t0 = new Date(s.date);
+      let m = t0.getHours() * 60 + t0.getMinutes() + t0.getSeconds() / 60;
+      for (let left = s.duration / 60; left > 0; left -= 1, m += 1) {
+        const w = Math.min(1, left), mod = ((m % 1440) + 1440) % 1440, ang = (mod / 1440) * 2 * Math.PI;
+        bins[Math.floor(mod / 60)] += w; x += Math.cos(ang) * w; y += Math.sin(ang) * w; total += w;
+      }
+    });
+    if (!total) return null;
+    let mean = (Math.atan2(y, x) / (2 * Math.PI)) * 1440;
+    if (mean < 0) mean += 1440;
+    const spread = Math.hypot(x, y) / total; // 1 = always the same time, 0 = all over the clock
+    // the busiest three hours in a row
+    let best = 0, bestAt = 0;
+    for (let h = 0; h < 24; h++) { const v = bins[h] + bins[(h + 1) % 24] + bins[(h + 2) % 24]; if (v > best) { best = v; bestAt = h; } }
+    return { mean, bins, total, spread, peak: bestAt, peakShare: best / total };
+  }
+  const clockLabel = (min) => { const d = new Date(2000, 0, 1, 0, Math.round(min) % 1440); return fmtTime(d); };
+  const hourLabel = (h) => new Date(2000, 0, 1, h % 24).toLocaleTimeString([], { hour: 'numeric' });
+  function renderStudyClock(fresh) {
+    const host = $('#study-clock');
+    if (!host) return;
+    const r = studyTimes();
+    if (!r) { host.innerHTML = '<div class="empty">Study a few sessions this month and your usual study time shows up here.</div>'; return; }
+    const mean = Math.round(r.mean / 5) * 5;
+    const max = Math.max(...r.bins);
+    const R0 = 46, R1 = 92;
+    const wedge = (h) => {
+      const v = r.bins[h] / max, rr = R0 + (R1 - R0) * Math.max(0.06, v);
+      const a0 = ((h / 24) * 360 - 90) * Math.PI / 180, a1 = (((h + 1) / 24) * 360 - 90) * Math.PI / 180, g = 0.012;
+      const p = (rad, a) => `${(110 + rad * Math.cos(a)).toFixed(1)},${(110 + rad * Math.sin(a)).toFixed(1)}`;
+      return `<path class="sc-w${r.bins[h] ? '' : ' none'}" style="--i:${h};--o:${(0.25 + 0.75 * v).toFixed(2)}" d="M${p(R0, a0 + g)} L${p(rr, a0 + g)} A${rr} ${rr} 0 0 1 ${p(rr, a1 - g)} L${p(R0, a1 - g)} A${R0} ${R0} 0 0 0 ${p(R0, a0 + g)}Z"><title>${hourLabel(h)}: ${fmtDur(r.bins[h] * 60)}</title></path>`;
+    };
+    const ticks = [0, 6, 12, 18].map((h) => { const a = ((h / 24) * 360 - 90) * Math.PI / 180; return `<text x="${(110 + 104 * Math.cos(a)).toFixed(1)}" y="${(110 + 104 * Math.sin(a) + 4).toFixed(1)}">${h === 0 ? '12am' : h === 12 ? '12pm' : hourLabel(h).replace(/\s/g, '').toLowerCase()}</text>`; }).join('');
+    const deg = (mean / 1440) * 360;
+    const part = (m) => (m < 300 ? 'late at night' : m < 720 ? 'in the morning' : m < 1020 ? 'in the afternoon' : m < 1260 ? 'in the evening' : 'at night');
+    host.innerHTML = `<svg class="sc-dial" viewBox="0 0 220 220">
+        <circle cx="110" cy="110" r="${R1}" class="sc-ring"/>${Array.from({ length: 24 }, (_, h) => wedge(h)).join('')}${ticks}
+        <g class="sc-needle" style="--deg:${deg.toFixed(1)}deg"><line x1="110" y1="110" x2="110" y2="${110 - R1 - 4}"/><circle cx="110" cy="${110 - R1 - 4}" r="5"/></g>
+        <circle cx="110" cy="110" r="${R0 - 8}" class="sc-hub"/><text x="110" y="107" class="sc-hub-t">${esc(clockLabel(mean))}</text><text x="110" y="122" class="sc-hub-s">average</text>
+      </svg>
+      <div class="sc-text">
+        <div class="sc-big">You usually study around <b>${esc(clockLabel(mean))}</b></div>
+        <p class="muted">That's ${part(mean)}, worked out from ${fmtDur(r.total * 60)} of study in the last 30 days.</p>
+        <div class="sc-rows">
+          <div><span>Busiest stretch</span><b>${esc(hourLabel(r.peak))} to ${esc(hourLabel(r.peak + 3))}</b><small>${Math.round(r.peakShare * 100)}% of your time</small></div>
+          <div><span>How regular</span><b>${r.spread > 0.8 ? 'Very steady' : r.spread > 0.55 ? 'Fairly steady' : r.spread > 0.3 ? 'Mixed' : 'All over the clock'}</b><small>${r.spread > 0.55 ? 'Mostly the same time of day' : 'Your study times vary a lot'}</small></div>
+        </div>
+      </div>`;
+    if (!fresh) host.classList.add('quiet'); else host.classList.remove('quiet');
   }
   // the period's forest: one tree per session, hover for the details
   function renderStatsPlot(list, a) {
@@ -2764,7 +2837,7 @@
     { sel: '#subject-chips', title: 'Pick a subject', text: 'Choose what you\'re about to study. You need a subject before you can start.' },
     { sel: '#tree-chips', title: 'Pick a tree', text: 'Choose which tree to grow. Your last session\'s tree is picked for you. Rare trees earn bonus coins.' },
     { sel: '.controls', title: 'Start the stopwatch', text: 'Start and pause as you need. Stop saves the session. Cancel throws it away. The space bar also starts and pauses.' },
-    { sel: '.tree-card', title: 'Your forest and your tree', text: 'Before you start, this shows your forest for the week. Each session grows one tree for every half hour, planted side by side. Hover over one to light up its session, and use the arrows to see earlier weeks. Once you start, your new tree grows here. At 10 minutes it takes root and earns 10 coins, then 1 coin for every extra minute, plus a 5 coin bonus at each full hour. Cancel before 10 minutes and it dies.' },
+    { sel: '.tree-card', title: 'Your forest and your tree', text: 'Before you start, this shows your forest for the week. Each session plants one tree. Hover over one to see its session, and use the arrows to see earlier weeks. Once you start, your new tree grows here and takes root at 10 minutes. When you finish and save, you get 1 coin for every minute plus a 5 coin bonus for each full hour. Cancel and you get no coins, and before 10 minutes the tree dies.' },
     { sel: '#nav-more', title: 'More tabs', text: 'At first only the Timer tab shows, to keep things simple. Press this arrow to open all the other tabs, and press it again to tuck them away.' },
     { sel: '.nav-item[data-page="stats"]', title: 'Stats', text: 'Pie and bar charts for any day, week, month or year.' },
     { sel: '.nav-item[data-page="grades"]', title: 'Grades', text: 'Pick a subject to see your Semester 1 and Semester 2 averages and exams, and what you need on the rest to get the grade you want.' },

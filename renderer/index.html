@@ -62,10 +62,10 @@
           <div class="clock-wrap">
             <svg class="ring" viewBox="0 0 300 300">
               <circle cx="150" cy="150" r="132" class="ring-track"/>
-              <circle cx="150" cy="150" r="132" class="ring-prog" id="ring-prog"/>
-              <circle cx="150" cy="150" r="132" class="ring-hour" id="ring-hour"/>
-              <circle cx="282" cy="150" r="7" class="ring-knob" id="ring-knob"/>
             </svg>
+            <div class="ring-layer ring-under" id="ring-under"></div>
+            <div class="ring-layer ring-cur" id="ring-cur"></div>
+            <svg class="ring ring-top" viewBox="0 0 300 300"><circle cx="282" cy="150" r="7" class="ring-knob" id="ring-knob"/></svg>
             <div class="clock-center">
               <div class="odometer" id="odometer"></div>
               <div class="clock-caption" id="clock-caption">00:00 until your tree takes root</div>
@@ -145,6 +145,10 @@
           <p class="muted tiny-note" id="bars-note">Click a bar to zoom in.</p>
         </div>
       </div>
+      <div class="card study-clock-card stagger" style="--i:5">
+        <div class="card-head"><h3>When you study</h3><span class="plot-counts">Last 30 days</span></div>
+        <div class="study-clock" id="study-clock"></div>
+      </div>
       <div class="card stagger" style="--i:5">
         <div class="card-head"><h3>Subject breakdown</h3></div>
         <div class="hbars" id="hbars"></div>
@@ -165,7 +169,7 @@
     <!-- GARDEN -->
     <section class="page" id="page-garden">
       <header class="page-head stagger" style="--i:0">
-        <div><h1>Your garden</h1><p class="sub">Every session over 10 minutes plants a tree here. Longer sessions grow one tree for every half hour.</p></div>
+        <div><h1>Your garden</h1><p class="sub">Every session over 10 minutes plants a tree here.</p></div>
         <div class="head-stats">
           <div class="mini-stat"><span class="ms-label">Trees</span><span class="ms-val" id="g-trees">0</span></div>
           <div class="mini-stat"><span class="ms-label">Total coins</span><span class="ms-val" id="g-coins">0</span></div>
