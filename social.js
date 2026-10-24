@@ -248,6 +248,13 @@ const ops = {
     if (!grades) delete myProfile.grades;
     return { uid, code: p.code, friends: p.friends || [] };
   },
+  // "I'm online": only bumps the profile's updated time (one small write every couple of minutes)
+  async ping() {
+    loadAccount();
+    if (!account.uid || !account.code) return false;
+    await commit([updateWrite(`profiles/${account.uid}`, { updated: new Date().toISOString() }, { merge: true, exists: true })]);
+    return true;
+  },
   // everything the Friends page needs in one go
   async refresh({ name }) {
     const p = await ensureProfile(name);
