@@ -105,13 +105,7 @@
       if (!C.isWithered(s)) { e[1] += 1; e[2] += C.sessionTrees(s); }
       e[3] = Math.max(e[3], s.duration);
     });
-    const a = D().active;
-    if (a) {
-      const sec = Math.floor(C.elapsedSec()), k = C.dayKey(new Date());
-      const e = out[k] || (out[k] = [0, 0, 0, 0]);
-      e[0] += sec;
-      e[3] = Math.max(e[3], sec);
-    }
+    // a session that's still running isn't counted until it's saved
     return out;
   }
   function publicData() {
@@ -441,9 +435,31 @@
   }
   function free() { const b = $('#fr-body'); if (b) b.replaceChildren(); }
 
+  // A background refresh rebuilds the page. Without care every card would restart its entrance
+  // animation and the page would blink out and back in, so a repaint that isn't fresh carries each
+  // animation on from where the last fresh paint left it (finished ones stay finished).
+  let paintedAt = 0;
+  function settle(host, skip) {
+    if (!host.getAnimations) return;
+    const t = performance.now() - paintedAt;
+    host.getAnimations({ subtree: true }).forEach((a) => {
+      if (skip && a.effect && a.effect.target && a.effect.target.closest && a.effect.target.closest(skip)) return;
+      const tm = a.effect && a.effect.getComputedTiming && a.effect.getComputedTiming();
+      if (!tm || !Number.isFinite(tm.endTime) || tm.iterations === Infinity) return;
+      if (t >= tm.endTime) a.finish();
+      else a.currentTime = t;
+    });
+  }
   function paint(fresh) {
     const host = $('#fr-body');
     if (!host || C.currentPage() !== 'friends') return;
+    // when the loading skeletons are swapped for real friend cards, those cards still pop in
+    const skel = !!host.querySelector('.skel');
+    if (fresh) paintedAt = performance.now();
+    paintInner(host, fresh);
+    if (!fresh) settle(host, skel ? '.fr-card' : null);
+  }
+  function paintInner(host, fresh) {
     paintCode();
     if (F.configured === false) {
       host.innerHTML = `<div class="card fr-setup stagger" style="--i:1">${peopleArt()}<h2>Friends are almost here</h2><p class="muted">Friends need the app's online server, which isn't switched on in this version yet. It will turn on by itself with an update. Everything else keeps working as usual.</p></div>`;

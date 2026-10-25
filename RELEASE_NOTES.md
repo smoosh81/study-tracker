@@ -1,10 +1,8 @@
-New in 1.13.0:
-- Coins: a session's coins now arrive all at once when you finish and save it, not bit by bit while you study. Cancel a session and you get no coins.
-- Leaderboard: the Friends tab shows who has studied the most hours this week.
-- Show off badges: pick 3 of your badges, and friends see them next to your name.
-- Online friends: see which friends are online, and what they're studying right now.
-- One tree per session again, including older long sessions in your garden.
-- Timer ring: it now goes round once an hour and draws over itself, with a new colour each hour that shifts as it goes round.
-- The root bar under your tree tucks away once the tree takes root.
-- Stats: a new "When you study" card shows the time of day you usually study, from the last 30 days.
-- Fixed the white stripe on the crates staying behind when the lid lifts.
+New in 1.14.0:
+- New tree models: 16 trees now have their own shape instead of being a recolour. Look out for the birch, the maple leaf, the crystal Twilight, the flame Ember, the sunburst Sunfire and more.
+- Exams: each exam can have its own exam grade, kept apart from your coursework, or count towards your coursework. Click the pill under the exam's name to switch. "What do I need?" works for both.
+- Trees and stats now only update once a session is finished and saved. A cancelled session plants nothing.
+- Trees only wiggle when the mouse touches the tree itself, not the empty space around it.
+- The dot on the timer ring is filled in with the ring's colour again.
+- Mini player: the ring goes round once an hour, in its usual colours.
+- Fixed the Friends tab flashing closed and open again just after you opened it.

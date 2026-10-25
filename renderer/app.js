@@ -452,9 +452,12 @@
   // Brushing past a tree pushes it away from the side the mouse came from, then it springs back.
   const mouse = { vx: 0 };
   document.addEventListener('mousemove', (e) => { mouse.vx = mouse.vx * 0.6 + e.movementX * 0.4; }, { passive: true });
+  // only the drawn tree counts (trunk, leaves, fruit), not the empty box around it, its shadow or its glow,
+  // so a thin pine only moves when the mouse actually touches it
+  const treeBody = (el, tree) => el && el !== tree && tree.contains(el) && el.closest && !el.closest('.shadow, .soil, .seed, .aura, defs');
   document.addEventListener('mouseover', (e) => {
     const tree = e.target.closest && e.target.closest('svg.tree');
-    if (!tree || (e.relatedTarget && tree.contains(e.relatedTarget))) return;
+    if (!tree || !treeBody(e.target, tree) || treeBody(e.relatedTarget, tree)) return;
     const g = tree.querySelector('.shake');
     if (!g) return;
     const now = performance.now();
@@ -854,13 +857,12 @@
       a.rooted = true;
       a.trees = 1;
       a.hours = Math.floor(sec / 3600);
-      D.trees.push({ id: a.treeId, species: a.species, subject: a.subject, date: a.startedAt, duration: Math.floor(sec), sessionId: a.sessionId });
       if (onTimer) {
         const r = holder.getBoundingClientRect();
         burst(r.left + r.width / 2, r.top + r.height * 0.4, { n: 60, up: true, speed: 8 });
         treeSvg.classList.remove('celebrate'); void treeSvg.getBBox(); treeSvg.classList.add('celebrate');
       }
-      toast('🌱 Your tree took root! Finish the session to collect your coins');
+      toast('🌱 Your tree took root! Finish the session to plant it and collect your coins');
       save();
       checkAchievements();
     }
@@ -872,7 +874,6 @@
       toast(`<span class="coin"></span> ${hours} hour${hours === 1 ? '' : 's'}! +${HOUR_BONUS} bonus coins when you finish`);
       save();
     }
-    if (a.rooted) { const t = D.trees.find((x) => x.id === a.treeId); if (t) t.duration = Math.floor(sec); }
   }
 
   // ---- the timer ring: one lap an hour, coloured from start to end so the colour tells the minute ----
@@ -880,8 +881,12 @@
   function ringColors(h) {
     const pair = RING_HUES[h % RING_HUES.length];
     if (pair) return pair;
+    // the first hour starts in the subject's colour, like the ring always has
+    const sub = D.active ? colorOf(D.active.subject) : '';
     const cs = getComputedStyle(document.body);
-    return [cs.getPropertyValue('--accent').trim() || '#4ade80', cs.getPropertyValue('--accent2').trim() || '#a3e635'];
+    const a = /^#[0-9a-f]{3,6}$/i.test(sub) ? sub : (cs.getPropertyValue('--accent').trim() || '#4ade80');
+    const b = cs.getPropertyValue('--accent2').trim();
+    return [a, /^#[0-9a-f]{3,6}$/i.test(b) && b.toLowerCase() !== a.toLowerCase() ? b : mixHex(a, '#ffffff', 0.45)];
   }
   function mixHex(a, b, t) {
     const rgb = (h) => { h = h.replace('#', ''); if (h.length === 3) h = h.replace(/./g, '$&$&'); return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16)); };
@@ -894,7 +899,8 @@
     const [a, b] = ringColors(h), deg = (lap * 360).toFixed(2), end = mixHex(a, b, lap);
     cur.style.background = `conic-gradient(${a} 0deg, ${end} ${deg}deg, transparent ${deg}deg)`;
     cur.style.setProperty('--glow', end);
-    knob.style.stroke = end;
+    knob.style.fill = end;
+    knob.style.stroke = mixHex(end, '#ffffff', 0.55);
     if (h > 0) {
       const [pa, pb] = ringColors(h - 1);
       under.style.background = `conic-gradient(${pa}, ${pb})`;
@@ -1007,8 +1013,10 @@
     D.coins += earned;
     recordSession(a, total, false);
     if (a.rooted) {
+      // the tree goes into the garden now that the session is saved
       const t = D.trees.find((x) => x.id === a.treeId);
       if (t) t.duration = total;
+      else D.trees.push({ id: a.treeId, species: a.species, subject: a.subject, date: a.startedAt, duration: total, sessionId: a.sessionId });
       const holder = $('#tree-holder'), r = holder.getBoundingClientRect();
       burst(r.left + r.width / 2, r.top + r.height * 0.4, { n: 50, up: true, speed: 7, colors: ['#fde047', '#fbbf24', '#ffffff', colorOf(a.subject)] });
       setTreeStatus('Planted in your garden');
@@ -1034,7 +1042,7 @@
       if (wasRunning) pause();
       const ok = await modal({
         title: 'Cancel this session?',
-        body: rooted ? 'This session\'s time won\'t be saved and you won\'t get its coins. Your tree already took root, so it stays in your garden.'
+        body: rooted ? 'This session\'s time won\'t be saved, you won\'t get its coins, and its tree won\'t be planted.'
           : 'This session\'s time won\'t be saved and your sapling will die.',
         actions: [{ label: 'Keep studying', ghost: true, value: false }, { label: 'Cancel session', danger: true, value: true }],
       });
@@ -1044,10 +1052,10 @@
     const a = finishActive();
     // keep a record (not counted in stats) so it shows in history and can be deleted
     if (total >= 10) recordSession(a, total, true);
-    if (!a.rooted) {
-      witherTree();
-      setTreeStatus('Your sapling died. No coins this time');
-    } else setTreeStatus('Session cancelled. Your tree stays in the garden');
+    // a cancelled session plants nothing (older versions planted at 10 minutes, so take that tree back out)
+    D.trees = D.trees.filter((t) => t.id !== a.treeId);
+    witherTree();
+    setTreeStatus(a.rooted ? 'Session cancelled. Nothing was planted' : 'Your sapling died. No coins this time');
     save(true);
     renderToday();
     window.api.closeMini();
@@ -1122,12 +1130,13 @@
   function streakDays() {
     const days = new Set(D.sessions.filter(counted).map((s) => dayKey(new Date(s.date))));
     let d = new Date(), n = 0;
-    if (!days.has(dayKey(d)) && !(D.active)) d = addDays(d, -1);
-    while (days.has(dayKey(d)) || (n === 0 && D.active && dayKey(d) === dayKey(new Date()))) { n++; d = addDays(d, -1); }
+    if (!days.has(dayKey(d))) d = addDays(d, -1);
+    while (days.has(dayKey(d))) { n++; d = addDays(d, -1); }
     return n;
   }
   function updateTodayHeader() {
-    const tot = todaySessions().reduce((a, s) => a + s.duration, 0) + (D.active ? elapsedSec() : 0);
+    // only saved sessions count; the one running now is added when it's finished
+    const tot = todaySessions().reduce((a, s) => a + s.duration, 0);
     $('#today-total').textContent = fmtDur(tot);
   }
   function sessRow(s, i, opts = {}) {
@@ -2242,7 +2251,7 @@
     const owned = window.Tree.SPECIES.filter((x) => owns(x.id));
     return {
       total: counted_.reduce((a, s) => a + s.duration, 0),
-      longest: counted_.reduce((m, s) => Math.max(m, s.duration), D.active ? elapsedSec() : 0),
+      longest: counted_.reduce((m, s) => Math.max(m, s.duration), 0),
       grown: totalTrees(),
       owned: owned.length,
       opened: (D.collection && D.collection.opened) || 0,
@@ -2572,12 +2581,23 @@
   }
 
   // ---------------- grade calculator ----------------
-  // Each subject has two semesters. Rows live in D.gradeExtras[subject]: {id, name, pct, weight, sem: 1|2, exam?}.
-  // A row with exam: true is that semester's exam (one per semester).
+  // Each subject has two semesters. Rows live in D.gradeExtras[subject]: {id, name, pct, weight, sem: 1|2, exam?, course?}.
+  // A row with exam: true is an exam. By default it has its own exam grade, kept apart from the coursework;
+  // course: true makes it count towards the coursework instead.
   const curSem = () => (new Date().getMonth() < 6 ? 1 : 2);
   const G = { subject: null, sem: curSem() };
   const semRows = (subject, sem) => (D.gradeExtras[subject] || []).filter((x) => x.sem === sem);
   const allGradeRows = () => Object.values(D.gradeExtras).flat().filter(Boolean);
+  const ownExam = (x) => !!x.exam && !x.course;
+  const courseRows = (rows) => rows.filter((x) => !ownExam(x));
+  // the exams that make up the exam grade: one exam is the whole grade, exams without weights count
+  // equally, and weights given to every exam are scaled so they add up to 100%
+  const examRows = (rows) => {
+    const ex = rows.filter(ownExam);
+    const w = ex.reduce((a, x) => a + (x.weight > 0 ? x.weight : 0), 0);
+    if (ex.length < 2 || !w) return ex.map((x) => ({ ...x, weight: 100 / ex.length }));
+    return ex.every((x) => x.weight > 0) ? ex.map((x) => ({ ...x, weight: (x.weight * 100) / w })) : ex;
+  };
   function semTarget(subject, sem) {
     const t = D.gradeTargets[subject];
     if (t && typeof t === 'object') return Number.isFinite(t[sem]) ? t[sem] : null;
@@ -2623,17 +2643,17 @@
     const items = rows.filter((x) => !x.exam), exams = rows.filter((x) => x.exam);
     const color = colorOf(G.subject);
     const row = (x, i) => `<div class="gi-row extra${x.exam ? ' is-exam' : ''}" style="--i:${i};--c:${color}" data-id="${x.id}"><span class="gi-ic ${x.exam ? 'exam' : 'plus'}">${x.exam ? EXAM_ICON : '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>'}</span>
-          <div class="gi-name"><input class="input gi-in-name" maxlength="50" placeholder="${x.exam ? 'Exam name' : 'Assessment name'}" value="${esc(x.name || '')}"></div>
-          <span class="gi-w"><span class="suffix-in sm"><input type="number" class="input gi-in-w" min="0" max="100" step="0.5" placeholder="Weight" value="${x.weight ?? ''}"><b>%</b></span></span>
+          <div class="gi-name"><input class="input gi-in-name" maxlength="50" placeholder="${x.exam ? 'Exam name' : 'Assessment name'}" value="${esc(x.name || '')}">${x.exam ? examKindBtn(x) : ''}</div>
+          <span class="gi-w"><span class="suffix-in sm"><input type="number" class="input gi-in-w" min="0" max="100" step="0.5" placeholder="Weight" title="${ownExam(x) ? 'Share of the exam grade (only matters with more than one exam)' : 'Share of the coursework grade'}" value="${x.weight ?? ''}"><b>%</b></span></span>
           <span class="gi-score">${scoreCell(x)}</span>
           <span class="gi-act"><button class="icon-btn sm gi-move" title="Move to Semester ${other}">${MOVE_ICON}</button><button class="icon-btn sm gi-del" title="Remove">${XICON}</button></span></div>`;
     // the summary circles: each semester's average and its exams, left out when there's nothing in them
     const all = (n) => semRows(G.subject, n);
     const stats = [
-      { id: 'a1', sem: 1, kind: 'avg', rows: all(1) },
-      { id: 'a2', sem: 2, kind: 'avg', rows: all(2) },
-      { id: 'e1', sem: 1, kind: 'exam', rows: all(1).filter((x) => x.exam) },
-      { id: 'e2', sem: 2, kind: 'exam', rows: all(2).filter((x) => x.exam) },
+      { id: 'a1', sem: 1, kind: 'avg', rows: courseRows(all(1)) },
+      { id: 'a2', sem: 2, kind: 'avg', rows: courseRows(all(2)) },
+      { id: 'e1', sem: 1, kind: 'exam', rows: all(1).filter(ownExam) },
+      { id: 'e2', sem: 2, kind: 'exam', rows: all(2).filter(ownExam) },
     ].filter((s) => s.rows.length);
     host.innerHTML = `${stats.length ? `<div class="sem-row n${stats.length}">${stats.map((s, i) => `<button class="card sem-card stagger${s.kind === 'exam' ? ' exam' : ''}${s.sem === sem ? ' on' : ''}" data-sem="${s.sem}" data-kind="${s.kind}" style="--i:${i + 2};--c:${color}" id="st-${s.id}"></button>`).join('')}</div>` : ''}
     <div class="grades-layout">
@@ -2643,7 +2663,7 @@
         <div class="gi-list">${items.length ? items.map(row).join('') : `<div class="empty">No assessments in Semester ${sem} yet.</div>`}</div>
         ${exams.length ? `<div class="gi-sub">${exams.length === 1 ? 'Exam' : 'Exams'}</div><div class="gi-list exams">${exams.map((x, i) => row(x, i + items.length)).join('')}</div>` : ''}
         <div class="btn-row"><button class="btn" id="gi-add"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Add an assessment</button><button class="btn" id="gi-add-exam">${EXAM_ICON}Add an exam</button></div>
-        <p class="muted tiny-note">Leave a score empty if you haven't done it yet. Weights are the % of the semester grade each one is worth. No exam this semester? Just don't add one, or remove it with ✕.</p>
+        <p class="muted tiny-note">Leave a score empty if you haven't done it yet. Weights are the % of the coursework grade each one is worth. Exams get their own exam grade, unless you switch one to count in coursework. No exam this semester? Just don't add one, or remove it with ✕.</p>
       </div>
       <div class="gr-side"><div class="card gr-target stagger" style="--i:7" id="gr-target"></div></div>
     </div>`;
@@ -2652,6 +2672,8 @@
     wireGradeRows();
     renderGradeResult();
   }
+  // the pill on an exam row: its own exam grade, or part of the coursework
+  const examKindBtn = (x) => `<button class="gi-kind${x.course ? ' course' : ''}" title="Click to switch">${x.course ? '<i></i>Counts in coursework' : '<i></i>Own exam grade'}</button>`;
   // a score is either a % or a letter; the small button beside it switches between the two
   const isLetter = (x) => typeof x.letter === 'string';
   const scoreTag = (x) => (isLetter(x) ? (x.pct != null ? `<span class="gi-mid" title="A ${esc(x.letter)} counts as ${fmtPct(x.pct)}, the middle of its band">≈${fmtPct(x.pct)}</span>` : '') : (x.pct != null ? gradeTag(x.pct) : ''));
@@ -2716,6 +2738,15 @@
       $('.gi-in-name', r).addEventListener('input', (ev) => { x.name = ev.target.value; save(); });
       $('.gi-in-w', r).addEventListener('input', (ev) => { x.weight = num(ev.target.value); if (x.weight > 100) x.weight = 100; save(); renderGradeResult(); });
       wireScore(r, x);
+      const kind = $('.gi-kind', r);
+      if (kind) kind.addEventListener('click', () => {
+        if (x.course) delete x.course; else x.course = true;
+        save();
+        toast(x.course ? `${x.name || 'This exam'} now counts towards your coursework` : `${x.name || 'This exam'} now has its own exam grade`);
+        renderGradeBody(false);
+        const again = $(`.gi-row[data-id="${x.id}"] .gi-kind`, host);
+        if (again) again.classList.add('flip');
+      });
       const out = (msg) => {
         save();
         r.style.height = r.offsetHeight + 'px'; r.classList.add('removing');
@@ -2730,14 +2761,15 @@
   function renderGradeResult() {
     $$('#gr-body .sem-card').forEach((el) => {
       const n = +el.dataset.sem, isExam = el.dataset.kind === 'exam';
-      const rows = semRows(G.subject, n).filter((x) => !isExam || x.exam);
+      const all = semRows(G.subject, n);
+      const rows = isExam ? examRows(all) : courseRows(all);
       const m = gradeMath(rows);
       const g = letterOf(m.avg);
       const R = 30, C = 2 * Math.PI * R;
       const prevP = +(el.dataset.p || 0), p = m.avg != null ? Math.min(100, m.avg) : 0;
-      const label = isExam ? `Semester ${n} ${rows.length > 1 ? 'exams' : 'exam'}` : `Semester ${n} average`;
+      const label = isExam ? `Semester ${n} ${rows.length > 1 ? 'exams' : 'exam'}` : all.some(ownExam) ? `Semester ${n} coursework` : `Semester ${n} average`;
       const sub = m.avg == null ? (isExam ? 'No score yet' : 'No scores yet')
-        : isExam ? (rows.length > 1 ? `${m.graded.length} of ${rows.length} done${m.mode === 'weighted' ? ', weighted' : ''}` : m.gw.length ? `worth ${fmtPct(m.doneW)}` : 'Done')
+        : isExam ? (rows.length > 1 ? `${m.graded.length} of ${rows.length} done` : 'Done')
         : m.mode === 'weighted' ? `from ${fmtPct(m.doneW)} of the weight` : 'plain average (no weights yet)';
       el.innerHTML = `<div class="sem-ring"><svg viewBox="0 0 76 76"><circle cx="38" cy="38" r="${R}" class="trk"/><circle cx="38" cy="38" r="${R}" class="val" style="stroke:${gradeColor(g)};stroke-dasharray:${C};stroke-dashoffset:${C * (1 - prevP / 100)}"/></svg><span class="sem-letter" style="color:${gradeColor(g)}">${g ? esc(g.l) : '–'}</span></div>
         <div class="sem-info"><span class="sem-k">${label}</span><b>${m.avg != null ? fmtPct(m.avg) : '–'}</b><span class="muted">${sub}</span>${!isExam && m.allW > 100.01 ? `<span class="gr-warn">Weights add up to ${fmtPct(m.allW)}</span>` : ''}</div>`;
@@ -2745,13 +2777,18 @@
       const v = $('.val', el);
       requestAnimationFrame(() => requestAnimationFrame(() => { v.style.strokeDashoffset = C * (1 - p / 100); }));
     });
-    renderGradeTarget(gradeMath(semRows(G.subject, G.sem)));
+    renderGradeTarget();
   }
-  function renderGradeTarget(m) {
+  // "what do I need" works on the coursework, or on the exam grade when there are exams with their own grade
+  function renderGradeTarget() {
     const box = $('#gr-target');
-    const saved = semTarget(G.subject, G.sem);
+    const rows = semRows(G.subject, G.sem), hasExam = rows.some(ownExam);
+    const kind = hasExam && G.tk === 'exam' ? 'exam' : 'course';
+    const m = gradeMath(kind === 'exam' ? examRows(rows) : courseRows(rows));
+    const key = kind === 'exam' ? `e${G.sem}` : G.sem;
+    const saved = semTarget(G.subject, key);
     const target = saved != null ? saved : 80;
-    box.innerHTML = `<div class="card-head"><h3>What do I need?</h3><span class="muted">Semester ${G.sem}</span></div>
+    box.innerHTML = `<div class="card-head"><h3>What do I need?</h3>${hasExam ? `<div class="seg tiny" id="tg-kind"><div class="seg-pill"></div><button data-k="course"${kind === 'course' ? ' class="active"' : ''}>Coursework</button><button data-k="exam"${kind === 'exam' ? ' class="active"' : ''}>Exam</button></div>` : `<span class="muted">Semester ${G.sem}</span>`}</div>
       <div class="tg-input-row"><span class="tg-custom big"><input type="number" class="input" id="tg-custom" min="1" max="100" step="0.5" value="${target}"><b>%</b></span><span class="tg-letter" id="tg-letter"></span></div>
       <div id="tg-verdict"></div>`;
     const inp = $('#tg-custom', box);
@@ -2765,16 +2802,31 @@
         if (animate && html) { const t = $('.gtag', tag); t.classList.add('pop-in'); }
       }
       inp.style.setProperty('--gc', g && v > 0 && v <= 100 ? gradeColor(g) : 'var(--border)');
-      $('#tg-verdict', box).innerHTML = v > 0 && v <= 100 ? targetVerdict(m, v) : '<p class="muted">Type a percentage between 1 and 100.</p>';
+      $('#tg-verdict', box).innerHTML = v > 0 && v <= 100 ? targetVerdict(m, v, kind) : '<p class="muted">Type a percentage between 1 and 100.</p>';
     };
     show(target, false);
     inp.addEventListener('input', () => {
       const v = +inp.value;
       show(v, true);
-      if (v > 0 && v <= 100) { setSemTarget(G.subject, G.sem, v); save(); }
+      if (v > 0 && v <= 100) { setSemTarget(G.subject, key, v); save(); }
     });
+    $$('#tg-kind button', box).forEach((b) => b.addEventListener('click', () => {
+      if (b.dataset.k === kind) return;
+      G.tk = b.dataset.k;
+      renderGradeTarget();
+      const v = $('#tg-verdict', box);
+      v.classList.remove('swap'); void v.offsetWidth; v.classList.add('swap');
+    }));
+    // the pill starts on the old choice and slides across
+    const seg = $('#tg-kind', box);
+    if (seg) {
+      const pill = $('.seg-pill', seg), act = $('button.active', seg);
+      if (G.tkPill != null) { pill.style.transition = 'none'; pill.style.width = G.tkPill.w + 'px'; pill.style.transform = `translateX(${G.tkPill.x}px)`; void pill.offsetWidth; pill.style.transition = ''; }
+      requestAnimationFrame(() => { pill.style.width = act.offsetWidth + 'px'; pill.style.transform = `translateX(${act.offsetLeft}px)`; G.tkPill = { w: act.offsetWidth, x: act.offsetLeft }; });
+    } else G.tkPill = null;
   }
-  function targetVerdict(m, target) {
+  function targetVerdict(m, target, kind) {
+    const ofWhat = kind === 'exam' ? 'of your exam grade' : 'of the weight';
     if (m.mode !== 'weighted') return '<p class="muted">Add weights to your assessments to see what you need on the rest.</p>';
     if (m.remainW <= 0.001) return `<div class="tg-verdict done"><span>Everything is graded. Your final result is <b>${fmtPct(m.earned)}</b> ${gradeTag(m.earned)}</span></div>`;
     const need = ((target - m.earned) * m.total) / m.remainW;
@@ -2782,7 +2834,7 @@
     if (need <= 0) return `<div class="tg-verdict ok">You've already locked in ${fmtPct(target)}. Even 0% on the rest keeps you there 🎉</div>`;
     if (need > 100) return `<div class="tg-verdict no"><span>Out of reach this time: even 100% on everything left gives you <b>${fmtPct(m.earned + m.remainW / m.total * 100)}</b> ${gradeTag(m.earned + m.remainW / m.total * 100)}</span></div>`;
     return `<div class="tg-verdict"><span class="tg-need" style="--gc:${gradeColor(ng)}"><b>${fmtPct(need)}</b>${gradeTag(need)}</span>
-      <span>average needed on the remaining <b>${fmtPct(m.remainW)}</b> of the weight${m.upcomingW > 0 && Math.abs(m.upcomingW - m.remainW) > 0.01 ? ` (${fmtPct(m.upcomingW)} of it is listed)` : ''}</span>
+      <span>average needed on the remaining <b>${fmtPct(m.remainW)}</b> ${ofWhat}${m.upcomingW > 0 && Math.abs(m.upcomingW - m.remainW) > 0.01 ? ` (${fmtPct(m.upcomingW)} of it is listed)` : ''}</span>
       <div class="tg-bar"><i style="--p:${Math.min(100, need).toFixed(1)}%;--gc:${gradeColor(ng)}"></i></div></div>`;
   }
 
@@ -3490,8 +3542,8 @@
     };
     return Object.keys(D.gradeExtras).filter((n) => (D.gradeExtras[n] || []).some((x) => x.pct != null)).map((n) => ({
       n, c: colorOf(n),
-      s1: cell(semRows(n, 1)), s2: cell(semRows(n, 2)),
-      e1: cell(semRows(n, 1).filter((x) => x.exam)), e2: cell(semRows(n, 2).filter((x) => x.exam)),
+      s1: cell(courseRows(semRows(n, 1))), s2: cell(courseRows(semRows(n, 2))),
+      e1: cell(examRows(semRows(n, 1))), e2: cell(examRows(semRows(n, 2))),
     }));
   }
   function friendsCtx() {
@@ -3511,13 +3563,13 @@
   function welcomeCtx(ready, onLeave) {
     return {
       ready, D, staticTree, paintTrees, totalTrees, fmtDur, animateNumber, butterflies, onLeave,
-      todayTotal: () => todaySessions().reduce((a, s) => a + s.duration, 0) + (D.active ? elapsedSec() : 0),
+      todayTotal: () => todaySessions().reduce((a, s) => a + s.duration, 0),
       streak: streakDays,
       weekTotals: () => {
         const out = [];
         for (let i = 6; i >= 0; i--) {
           const d = addDays(new Date(), -i), k = dayKey(d);
-          const sec = D.sessions.filter((s) => counted(s) && dayKey(new Date(s.date)) === k).reduce((a, s) => a + s.duration, 0) + (i === 0 && D.active ? elapsedSec() : 0);
+          const sec = D.sessions.filter((s) => counted(s) && dayKey(new Date(s.date)) === k).reduce((a, s) => a + s.duration, 0);
           out.push({ label: d.toLocaleDateString([], { weekday: 'narrow' }), sec, today: i === 0 });
         }
         return out;
