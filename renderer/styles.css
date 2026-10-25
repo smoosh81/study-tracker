@@ -288,7 +288,9 @@ h3 { font-size: 15px; font-weight: 650; }
 .garden-tile .tree .sway { animation-duration: 7s; animation-delay: calc(var(--i, 0) * -0.7s); }
 @keyframes sway { 0%, 100% { transform: rotate(-1.4deg); } 50% { transform: rotate(1.4deg); } }
 .tree.dying .leaf, .tree.dying .sprout { fill: #8b6a40 !important; animation: leafFall 1.8s var(--ease) forwards; animation-delay: calc(.8s + var(--i, 0) * 90ms); }
-.tree.dying .trunk, .tree.dying .branch { fill: #6b5a48; stroke: #6b5a48; }
+.tree.dying .trunk { fill: #6b5a48; }
+.tree.dying .branch, .tree.dying .leaf.line { stroke: #6b5a48; }
+.tree.dying .snow { animation: leafFall 1.4s var(--ease) forwards; }
 .tree.dying .stem { stroke: #8b6a40; }
 .tree.dying .grow { transform: rotate(-8deg) scale(.92) !important; transition: transform 2.2s var(--ease); }
 .tree.dying .fruit { animation: leafFall 1.4s var(--ease) forwards; }
@@ -518,7 +520,9 @@ h3 { font-size: 15px; font-weight: 650; }
 .tree.withered .stem { stroke: #8b6a40; }
 .tree.withered .trunk { fill: #6b5a48; }
 .tree.withered .grow { transform: rotate(-7deg) scale(.6) !important; }
-.tree.withered .aura, .tree.withered .spark, .tree.withered .fruit { display: none; }
+.tree.withered .aura, .tree.withered .spark, .tree.withered .fruit, .tree.withered .snow, .tree.withered .ring { display: none; }
+/* leaves drawn as lines (willow strands, veins) never get a fill, even when the tree dies */
+.tree .leaf.line { fill: none !important; }
 /* special trees */
 .tree.fx-hue .canopy, .tree.fx-hue .aura { animation: hue 8s linear infinite; }
 @keyframes hue { to { filter: hue-rotate(360deg); } }
@@ -1115,6 +1119,15 @@ body.is-night .bfly { display: none; }
 .gi-row.is-exam { background: color-mix(in srgb, var(--c) 9%, var(--surface2)); box-shadow: inset 3px 0 0 color-mix(in srgb, var(--c) 70%, transparent); }
 .gi-ic.exam { color: var(--c); background: color-mix(in srgb, var(--c) 18%, transparent); }
 .gi-act { display: flex; gap: 2px; }
+.gi-kind { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; margin-top: 5px; padding: 3px 10px 3px 7px; border-radius: 99px; border: 1px solid color-mix(in srgb, var(--c) 45%, transparent); background: color-mix(in srgb, var(--c) 14%, var(--surface)); color: var(--text); font-family: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer; transition: transform .3s var(--spring), background .3s, border-color .3s, color .3s; }
+.gi-kind i { width: 8px; height: 8px; border-radius: 50%; background: var(--c); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 25%, transparent); transition: background .3s, box-shadow .3s; }
+.gi-kind.course { background: var(--surface); border-color: var(--border); color: var(--muted); }
+.gi-kind.course i { background: transparent; box-shadow: inset 0 0 0 2px var(--muted); }
+.gi-kind:hover { transform: translateY(-1px); border-color: var(--c); color: var(--text); }
+.gi-kind:active { transform: scale(.94); }
+.gi-kind.flip { animation: kindFlip .5s var(--spring); }
+@keyframes kindFlip { 0% { transform: scale(.85); } 60% { transform: scale(1.06); } 100% { transform: scale(1); } }
+#tg-verdict.swap { animation: fadeUp .4s var(--ease); }
 .gi-move { opacity: .55; }
 .gi-row:hover .gi-move { opacity: 1; }
 #gi-add-exam svg { width: 16px; height: 16px; }

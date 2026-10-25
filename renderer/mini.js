@@ -10,8 +10,14 @@
     if (!last) return;
     const sec = last.state === 'running' ? base + (Date.now() - baseAt) / 1000 : base;
     $('#time').textContent = fmt(sec);
-    const lap = sec < 600 ? sec / 600 : ((sec - 600) % 3600) / 3600;
-    $('#pr').style.strokeDashoffset = (C * (1 - lap)).toFixed(2);
+    const lap = (sec % 3600) / 3600; // one loop an hour, like the main timer
+    const pr = $('#pr');
+    // on the hour the ring starts a new lap: jump back to empty instead of winding backwards
+    const wrap = lap < (pr._lap || 0) - 0.5;
+    if (wrap) pr.style.transition = 'none';
+    pr.style.strokeDashoffset = (C * (1 - lap)).toFixed(2);
+    if (wrap) { void pr.getBoundingClientRect(); pr.style.transition = ''; }
+    pr._lap = lap;
     document.body.classList.toggle('rooted', sec >= 600);
     if (svg) { const g = Tree.growthFor(sec); Tree.setGrowth(svg, g.p, g.g); }
   }
