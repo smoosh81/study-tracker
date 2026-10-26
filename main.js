@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, screen, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, screen, shell, session } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const updater = require('./updater');
@@ -28,6 +28,28 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 app.setAppUserModelId('com.studytracker.app');
+
+// ---- safety: the app's windows only ever show the app's own pages ----
+// Links can't move a window to a website, new windows never open inside the app, and only
+// GitHub links (the "download the update" link) are handed to the web browser.
+function openOutside(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol === 'https:' && u.hostname === 'github.com') shell.openExternal(u.href);
+  } catch (e) {}
+}
+app.on('web-contents-created', (_e, wc) => {
+  wc.on('will-navigate', (e, url) => { e.preventDefault(); openOutside(url); });
+  wc.on('will-redirect', (e) => e.preventDefault());
+  wc.on('will-attach-webview', (e) => e.preventDefault());
+  wc.setWindowOpenHandler(({ url }) => { openOutside(url); return { action: 'deny' }; });
+});
+// Only the app's own pages (loaded from its files) may use the app's functions.
+const fromApp = (e) => {
+  try { return new URL(e.senderFrame.url).protocol === 'file:'; } catch (err) { return false; }
+};
+const handle = (ch, fn) => ipcMain.handle(ch, (e, ...a) => { if (!fromApp(e)) throw new Error('not allowed'); return fn(e, ...a); });
+const listen = (ch, fn) => ipcMain.on(ch, (e, ...a) => { if (!fromApp(e)) { e.returnValue = false; return; } fn(e, ...a); });
 // don't keep a spare renderer process warmed up in the background (saves memory)
 app.commandLine.appendSwitch('disable-features', 'SpareRendererForSitePerProcess');
 
@@ -105,6 +127,8 @@ function createMain() {
       backgroundThrottling: true,
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
+      webviewTag: false,
     },
   });
   mainWin.removeMenu();
@@ -121,7 +145,6 @@ function createMain() {
   mainWin.on('maximize', () => { wasMaximized = true; saveWinState(); });
   mainWin.on('unmaximize', () => { if (!mainWin.isMinimized()) { wasMaximized = false; saveWinState(); } });
   mainWin.on('close', () => saveWinState(true));
-  mainWin.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
   mainWin.on('closed', () => {
     mainWin = null;
     if (miniWin) miniWin.destroy();
@@ -153,6 +176,9 @@ function createMini() {
       preload: path.join(__dirname, 'preload.js'),
       backgroundThrottling: false,
       contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webviewTag: false,
     },
   });
   miniWin.setAlwaysOnTop(true, 'floating');
@@ -164,29 +190,31 @@ function createMini() {
 }
 
 app.whenReady().then(() => {
-  ipcMain.handle('data:load', () => readData());
-  ipcMain.handle('data:save', (_e, data) => { writeData(data); return true; });
-  ipcMain.handle('app:version', () => app.getVersion());
+  // the app needs no camera, microphone, location, notifications and so on; copying the friend code is the one thing it asks for
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === 'clipboard-sanitized-write'));
+  handle('data:load', () => readData());
+  handle('data:save', (_e, data) => { writeData(data); return true; });
+  handle('app:version', () => app.getVersion());
   // the notes for this version, shown once after an update
-  ipcMain.handle('app:notes', () => { try { return fs.readFileSync(path.join(__dirname, 'RELEASE_NOTES.md'), 'utf8'); } catch (e) { return ''; } });
+  handle('app:notes', () => { try { return fs.readFileSync(path.join(__dirname, 'RELEASE_NOTES.md'), 'utf8'); } catch (e) { return ''; } });
   // friends (online); see social.js
-  ipcMain.handle('social', (_e, op, args) => social.call(op, args));
+  handle('social', (_e, op, args) => social.call(op, args));
   // Before an older save is upgraded to a new format, keep an untouched copy of it.
-  ipcMain.handle('data:backupBeforeUpgrade', (_e, { data, fromVersion }) => {
+  handle('data:backupBeforeUpgrade', (_e, { data, fromVersion }) => {
     const dir = path.join(app.getPath('userData'), 'backups');
     fs.mkdirSync(dir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const file = path.join(dir, `study-data-format${fromVersion}-before-upgrade-${stamp}.json`);
+    const file = path.join(dir, `study-data-format${String(fromVersion).replace(/[^0-9]/g, '').slice(0, 6)}-before-upgrade-${stamp}.json`);
     fs.writeFileSync(file, JSON.stringify(data), 'utf8');
     return file;
   });
-  ipcMain.on('data:saveSync', (e, data) => {
+  listen('data:saveSync', (e, data) => {
     try { writeData(data); e.returnValue = true; } catch (err) { e.returnValue = false; }
   });
 
-  ipcMain.handle('file:export', async (_e, { content, defaultName, filters }) => {
+  handle('file:export', async (_e, { content, defaultName, filters }) => {
     const res = await dialog.showSaveDialog(mainWin, {
-      defaultPath: path.join(app.getPath('documents'), defaultName),
+      defaultPath: path.join(app.getPath('documents'), path.basename(String(defaultName || 'study-tracker'))),
       filters,
     });
     if (res.canceled || !res.filePath) return null;
@@ -194,7 +222,7 @@ app.whenReady().then(() => {
     return res.filePath;
   });
 
-  ipcMain.handle('file:import', async () => {
+  handle('file:import', async () => {
     const res = await dialog.showOpenDialog(mainWin, {
       properties: ['openFile'],
       filters: [
@@ -207,7 +235,7 @@ app.whenReady().then(() => {
     return { name: path.basename(p), content: fs.readFileSync(p, 'utf8') };
   });
 
-  ipcMain.on('theme:titlebar', (_e, { color, symbol }) => {
+  listen('theme:titlebar', (_e, { color, symbol }) => {
     if (mainWin && process.platform === 'win32') {
       try { mainWin.setTitleBarOverlay({ color, symbolColor: symbol, height: 40 }); } catch (e) {}
     }
@@ -215,16 +243,16 @@ app.whenReady().then(() => {
 
   // Mini player plumbing: the main window owns the timer and pushes state;
   // the mini player sends button presses back.
-  ipcMain.on('mini:open', () => {
+  listen('mini:open', () => {
     createMini();
     if (mainWin) {
       if (!mainWin.isMinimized()) wasMaximized = mainWin.isMaximized();
       mainWin.minimize();
     }
   });
-  ipcMain.on('mini:close', () => { if (miniWin) miniWin.close(); });
-  ipcMain.on('mini:state', (_e, state) => { if (miniWin) miniWin.webContents.send('mini:state', state); });
-  ipcMain.on('mini:command', (_e, cmd) => {
+  listen('mini:close', () => { if (miniWin) miniWin.close(); });
+  listen('mini:state', (_e, state) => { if (miniWin) miniWin.webContents.send('mini:state', state); });
+  listen('mini:command', (_e, cmd) => {
     if (cmd === 'expand') {
       // straight back to the main window, maximised if that's how it was left
       if (miniWin) { miniWin.destroy(); miniWin = null; }
@@ -240,12 +268,12 @@ app.whenReady().then(() => {
     if (cmd === 'close') { if (miniWin) miniWin.close(); return; }
     if (mainWin) mainWin.webContents.send('mini:command', cmd);
   });
-  ipcMain.on('mini:resize', (_e, { w, h }) => {
+  listen('mini:resize', (_e, { w, h }) => {
     if (!miniWin) return;
     const b = miniWin.getBounds();
     miniWin.setBounds({ x: b.x, y: b.y, width: Math.round(w), height: Math.round(h) }, true);
   });
-  ipcMain.on('mini:corner', () => {
+  listen('mini:corner', () => {
     if (!miniWin) return;
     const wa = screen.getDisplayMatching(miniWin.getBounds()).workArea;
     const b = miniWin.getBounds();
@@ -257,9 +285,9 @@ app.whenReady().then(() => {
   // ---- automatic updates (see updater.js) ----
   let updateRepo = '';
   try { updateRepo = require('./package.json').updateRepo || ''; } catch (e) {}
-  ipcMain.handle('update:state', () => updater.getState());
-  ipcMain.handle('update:check', () => updater.check(true));
-  ipcMain.handle('update:restart', () => updater.restartNow());
+  handle('update:state', () => updater.getState());
+  handle('update:check', () => updater.check(true));
+  handle('update:restart', () => updater.restartNow());
   updater.init({
     repo: updateRepo,
     send: (st) => { if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('update:state', st); },

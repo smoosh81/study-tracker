@@ -277,7 +277,7 @@
       out.gardenSpots[view] = ok;
     }
     out.social = Object.assign(blankSocial(), obj(x.social) ? x.social : {});
-    ['claims', 'gifts', 'names'].forEach((k) => { if (!obj(out.social[k])) out.social[k] = {}; });
+    ['claims', 'gifts', 'names', 'blocked'].forEach((k) => { if (!obj(out.social[k])) out.social[k] = {}; });
     if (!obj(out.social.giftLog)) out.social.giftLog = { day: '', spent: 0 };
     out.social.shareGrades = out.social.shareGrades === true;
     out.social.showcase = Array.isArray(out.social.showcase) ? out.social.showcase.filter((id) => typeof id === 'string').slice(0, 3) : [];
@@ -2178,18 +2178,20 @@
   function friendGarden(host, g, decorCounts) {
     const okColor = (c) => (typeof c === 'string' && /^#[0-9a-f]{3,8}$/i.test(c) ? c : '#94a3b8');
     const subs = Array.isArray(g && g.s) ? g.s : [];
-    const items = (Array.isArray(g && g.t) ? g.t : []).slice(-PLOT_MAX).map((r) => {
+    const items = (Array.isArray(g && g.t) ? g.t : []).slice(-PLOT_MAX).map((r, i) => {
       if (!Array.isArray(r)) return null;
+      // ids end up inside the drawing, so only plain letters, digits, - and _ are kept
+      const id = String(r[0]).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) || 'f' + i;
       const sub = Array.isArray(subs[r[4]]) ? subs[r[4]] : [];
       const date = new Date(r[2]);
       if (isNaN(date)) return null;
-      return { id: String(r[0]).slice(0, 40), tree: window.Tree.get(r[1]).id, date: date.toISOString(), duration: Math.max(0, Math.min(86400, +r[3] || 0)),
+      return { id, tree: window.Tree.get(r[1]).id, date: date.toISOString(), duration: Math.max(0, Math.min(86400, +r[3] || 0)),
         subject: String(sub[0] || 'Study').slice(0, 60), color: okColor(sub[1]), outcome: r[5] ? 'withered' : 'grown' };
     }).filter(Boolean).sort((a, b) => new Date(a.date) - new Date(b.date));
     const decor = DECOR.flatMap((d) => Array(Math.max(0, Math.min(d.max, Math.floor(+(decorCounts || {})[d.id] || 0)))).fill(d.id));
     let spots = null;
     if (g && g.p && typeof g.p === 'object') {
-      spots = {};
+      spots = Object.create(null);
       Object.entries(g.p).slice(0, 2000).forEach(([k, c]) => {
         if (Array.isArray(c) && Number.isInteger(c[0]) && Number.isInteger(c[1]) && c[0] >= 0 && c[1] >= 0 && c[0] < 60 && c[1] < 60) spots[k] = [c[0], c[1]];
       });

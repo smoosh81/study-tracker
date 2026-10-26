@@ -52,6 +52,7 @@
     me: null, code: null, friends: [], inbox: [], view: null, tab: 'stats', busy: false,
   };
   const STREAK_MIN = 15 * 60;       // each of you studies 15 minutes for the day to count
+  const MAX_REQUESTS = 20;          // friend requests shown at once (newest first)
   const MAX_STREAKS = 3;            // streak rewards from up to 3 friends at a time
   const MAX_TEAMS = 3;              // weekly task rewards from up to 3 friends a week
   const GIFT_DAY_LIMIT = 400;       // coins (or the price of cases) you can give away per day
@@ -85,7 +86,82 @@
     const n = shownName(name);
     return `<span class="fr-av ${size}" style="--av:${AV_COLORS[hash(uid || n) % AV_COLORS.length]}">${C.esc(n.slice(0, 1).toUpperCase())}</span>`;
   }
-  const parse = (s) => { try { return s ? JSON.parse(s) : null; } catch (e) { return null; } };
+  const parse = (s) => { try { return typeof s === 'string' && s ? JSON.parse(s) : null; } catch (e) { return null; } };
+
+  // ---------------- friend data is checked before use ----------------
+  // Everything below comes from someone else's computer, and they can send anything.
+  // Each piece is rebuilt with the type it should have, so only plain numbers, short
+  // text (which is still escaped when shown), known ids and real colours get through.
+  const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+  const isObj = (o) => !!o && typeof o === 'object' && !Array.isArray(o);
+  const int = (v, max = 1e9) => { const n = Math.floor(Number(v)); return Number.isFinite(n) ? Math.max(0, Math.min(max, n)) : 0; };
+  const txt = (v, max = 60) => (typeof v === 'string' ? v.slice(0, max) : '');
+  const color = (c) => (typeof c === 'string' && /^#[0-9a-f]{3,8}$/i.test(c) ? c : '#94a3b8');
+  const isoDate = (v) => { if (typeof v !== 'string' || v.length > 40) return null; const t = Date.parse(v); return Number.isFinite(t) ? new Date(t).toISOString() : null; };
+  const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+  function cleanInfo(raw) {
+    if (!isObj(raw)) return null;
+    const out = {
+      coins: int(raw.coins), trees: int(raw.trees), withered: int(raw.withered), opened: int(raw.opened),
+      total: int(raw.total), longest: int(raw.longest, 86400 * 2), count: int(raw.count), streak: int(raw.streak, 100000),
+    };
+    out.owned = {};
+    if (isObj(raw.owned)) window.Tree.SPECIES.forEach((sp) => { if (own(raw.owned, sp.id)) out.owned[sp.id] = int(raw.owned[sp.id], 9999); });
+    out.badges = {};
+    if (isObj(raw.badges)) C.BADGES.forEach((b) => { if (own(raw.badges, b.id) && raw.badges[b.id]) { const t = Number(raw.badges[b.id]); out.badges[b.id] = Number.isFinite(t) && t > 0 ? t : Date.now(); } });
+    out.show = (Array.isArray(raw.show) ? raw.show : []).filter((id) => typeof id === 'string' && own(out.badges, id)).slice(0, 3);
+    out.subjects = (Array.isArray(raw.subjects) ? raw.subjects : []).slice(0, 8).filter(isObj).map((s) => ({ n: txt(s.n) || 'Study', c: color(s.c), s: int(s.s) }));
+    out.sessions = (Array.isArray(raw.sessions) ? raw.sessions : []).slice(0, 40).filter(isObj).map((s) => {
+      const d = isoDate(s.d);
+      return d && { d, s: int(s.s, 86400), n: txt(s.n) || 'Study', c: color(s.c), t: C.validTree(s.t), w: s.w ? 1 : 0, k: int(s.k, 1e6), x: int(s.x, 999) };
+    }).filter(Boolean);
+    out.days = {};
+    if (isObj(raw.days)) Object.keys(raw.days).filter((k) => DAY_RE.test(k)).slice(-500).forEach((k) => {
+      const e = raw.days[k];
+      if (Array.isArray(e)) out.days[k] = [int(e[0], 86400), int(e[1], 1000), int(e[2], 10000), int(e[3], 86400)];
+    });
+    out.decor = {};
+    if (isObj(raw.decor)) Object.keys(raw.decor).filter((k) => SAFE_ID.test(k)).slice(0, 100).forEach((k) => { out.decor[k] = int(raw.decor[k], 999); });
+    // the garden is checked again, piece by piece, when it's drawn (friendGarden in app.js)
+    out.garden = isObj(raw.garden) ? raw.garden : null;
+    const lv = raw.live;
+    out.live = isObj(lv) ? { s: txt(lv.s, 40), c: color(lv.c), e: int(lv.e, 86400 * 2), t: isoDate(lv.t), p: lv.p ? 1 : 0 } : null;
+    return out;
+  }
+  function cleanGrades(raw) {
+    if (!Array.isArray(raw)) return null;
+    const cell = (x) => {
+      if (!isObj(x)) return null;
+      const p = Number(x.p);
+      return Number.isFinite(p) ? { p: Math.max(0, Math.min(1000, p)), l: txt(x.l, 3), c: color(x.c) } : null;
+    };
+    return raw.slice(0, 60).filter(isObj).map((s) => ({ n: txt(s.n) || 'Subject', c: color(s.c), s1: cell(s.s1), s2: cell(s.s2), e1: cell(s.e1), e2: cell(s.e2) }));
+  }
+  function cleanStreak(st) {
+    if (!isObj(st) || !Array.isArray(st.members)) return null;
+    return {
+      members: st.members.filter((m) => typeof m === 'string').slice(0, 2), by: txt(st.by, 128),
+      status: st.status === 'active' ? 'active' : 'pending', since: DAY_RE.test(st.since) ? st.since : C.dayKey(new Date()), updated: txt(st.updated, 40),
+    };
+  }
+  function cleanFriend(f) {
+    if (!isObj(f) || typeof f.uid !== 'string' || !SAFE_ID.test(f.uid)) return null;
+    return {
+      uid: f.uid, pair: txt(f.pair, 260), mutual: f.mutual === true, name: txt(f.name, 40) || null,
+      code: typeof f.code === 'string' && /^[A-Z]{4}$/.test(f.code) ? f.code : null, updated: isoDate(f.updated),
+      streak: cleanStreak(f.streak), info: cleanInfo(parse(f.data)), gradeInfo: cleanGrades(parse(f.grades)),
+    };
+  }
+  const BOXES = ['seed', 'sapling', 'grove'];
+  function cleanItem(x) {
+    if (!isObj(x) || typeof x.id !== 'string' || !SAFE_ID.test(x.id) || typeof x.from !== 'string' || !SAFE_ID.test(x.from)) return null;
+    const base = { id: x.id, from: x.from, name: txt(x.name, 40), at: txt(x.at, 40) };
+    if (x.type === 'request' && x.id === 'req_' + x.from) return { ...base, type: 'request', code: typeof x.code === 'string' && /^[A-Z]{4}$/.test(x.code) ? x.code : '' };
+    if (x.type === 'gift' && x.kind === 'coins') return { ...base, type: 'gift', kind: 'coins', amount: Math.max(1, int(x.amount, 500)) };
+    if (x.type === 'gift' && x.kind === 'case' && BOXES.includes(x.box)) return { ...base, type: 'gift', kind: 'case', box: x.box };
+    return null;
+  }
   const call = (op, args) => window.api.social(op, args);
   const myName = () => cleanName(D().profile.name).name;
   const S = () => D().social;
@@ -170,8 +246,14 @@
       const v = r.value;
       const before = new Set(F.inbox.map((x) => x.id));
       F.me = v.uid; F.code = v.code; F.offline = false; F.error = '';
-      F.friends = v.friends.map((f) => Object.assign(f, { info: parse(f.data), gradeInfo: parse(f.grades) }));
-      F.inbox = v.inbox;
+      F.friends = (Array.isArray(v.friends) ? v.friends : []).map(cleanFriend).filter(Boolean);
+      // newest first, and only so many requests at once, so a flood of them can't bury the page
+      const items = (Array.isArray(v.inbox) ? v.inbox : []).map(cleanItem).filter(Boolean).sort((a, b) => (b.at > a.at ? 1 : b.at < a.at ? -1 : 0));
+      const blocked = S().blocked || {};
+      F.inbox = items.filter((x) => x.type === 'gift').slice(0, 60)
+        .concat(items.filter((x) => x.type === 'request' && !blocked[x.from]).slice(0, MAX_REQUESTS));
+      // requests from blocked people are cleared away quietly
+      items.filter((x) => x.type === 'request' && blocked[x.from]).slice(0, 20).forEach((x) => call('dismiss', { id: x.id }));
       F.loadedAt = Date.now();
       const mutual = F.friends.filter((f) => f.mutual).length;
       if (mutual > (S().friendsMax || 0)) { S().friendsMax = mutual; C.save(); }
@@ -488,7 +570,7 @@
         </div>
       </div>
       ${showcaseCard(i++)}
-      ${reqs.length ? `<div class="card stagger" style="--i:${i++}"><div class="card-head"><h3>Friend requests</h3></div><div class="fr-reqs">${reqs.map((r, k) => `<div class="fr-req" style="--i:${k}" data-id="${C.esc(r.id)}">${avatar(r.name, r.from)}<span class="fr-req-name"><b>${C.esc(shownName(r.name))}</b><small>${C.esc(r.code || '')} wants to be friends</small></span><button class="btn ghost small" data-a="no">Not now</button><button class="btn primary small" data-a="yes">Accept</button></div>`).join('')}</div></div>` : ''}
+      ${reqs.length ? `<div class="card stagger" style="--i:${i++}"><div class="card-head"><h3>Friend requests</h3></div><div class="fr-reqs">${reqs.map((r, k) => `<div class="fr-req" style="--i:${k}" data-id="${C.esc(r.id)}">${avatar(r.name, r.from)}<span class="fr-req-name"><b>${C.esc(shownName(r.name))}</b><small>${C.esc(r.code || '')} wants to be friends</small></span><button class="btn ghost small" data-a="block" title="Hide requests from this person from now on">Block</button><button class="btn ghost small" data-a="no">Not now</button><button class="btn primary small" data-a="yes">Accept</button></div>`).join('')}</div></div>` : ''}
       ${gifts.length ? `<div class="card stagger fr-gifts-card" style="--i:${i++}"><div class="card-head"><h3>Gifts for you</h3><span class="muted">Click a gift to open it</span></div><div class="fr-gifts">${gifts.map((g, k) => `<button class="fr-gift" style="--i:${k};--cc:${g.kind === 'case' ? C.caseColor(g.box) : '#fbbf24'}" data-id="${C.esc(g.id)}"><span class="fr-gift-box"><i class="lid"></i><i class="body"></i><i class="ribbon"></i></span><span class="fr-gift-from">From <b>${C.esc(shownName(g.name))}</b></span></button>`).join('')}</div></div>` : ''}
       ${mutual.length ? leaderboardCard(mutual, i++) : ''}
       <div class="card stagger" style="--i:${i++}">
@@ -593,6 +675,7 @@
       if (!item) return;
       $$('button', row).forEach((x) => { x.disabled = true; });
       const yes = b.dataset.a === 'yes';
+      if (b.dataset.a === 'block') { S().blocked = Object.assign({}, S().blocked, { [item.from]: Date.now() }); C.save(); }
       const r = yes ? await call('acceptRequest', { from: item.from, id: item.id, name: myName() }) : await call('dismiss', { id: item.id });
       if (!r.ok) { C.toast(r.offline ? "You're offline" : C.esc(r.error)); $$('button', row).forEach((x) => { x.disabled = false; }); return; }
       if (yes) {

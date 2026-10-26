@@ -374,11 +374,40 @@ const ops = {
   },
 };
 
+// Everything from the app window is checked before it goes into a server path.
+const SAFE = /^[A-Za-z0-9_-]{1,128}$/;
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+function checkArgs(op, a) {
+  const id = (v) => { if (typeof v !== 'string' || !SAFE.test(v)) throw new SocialError('bad request', 400); return v; };
+  const day = (v) => { if (typeof v !== 'string' || !DAY.test(v)) throw new SocialError('bad request', 400); return v; };
+  if ('name' in a) a.name = typeof a.name === 'string' ? a.name.slice(0, 40) : '';
+  switch (op) {
+    case 'acceptRequest': id(a.from); id(a.id); break;
+    case 'dismiss': case 'takeGift': id(a.id); break;
+    case 'removeFriend': id(a.uid); break;
+    case 'sendGift':
+      id(a.to);
+      if (a.kind === 'coins') { a.amount = Math.floor(Number(a.amount)); if (!(a.amount >= 1 && a.amount <= 500)) throw new SocialError('bad request', 400); }
+      else if (!(a.kind === 'case' && ['seed', 'sapling', 'grove'].includes(a.box))) throw new SocialError('bad request', 400);
+      break;
+    case 'startStreak': id(a.friend); day(a.today); break;
+    case 'acceptStreak': case 'restartStreak': id(a.pair); day(a.today); break;
+    case 'endStreak': id(a.pair); break;
+    case 'publish':
+      if (typeof a.data !== 'string' || a.data.length >= 400000) a.data = '';
+      if (a.grades != null && (typeof a.grades !== 'string' || a.grades.length >= 60000)) a.grades = '';
+      break;
+    default: break;
+  }
+  return a;
+}
+
 async function call(op, args) {
   if (!configured()) return { ok: false, error: 'not-configured' };
-  if (!ops[op]) return { ok: false, error: 'unknown' };
+  if (typeof op !== 'string' || !Object.prototype.hasOwnProperty.call(ops, op)) return { ok: false, error: 'unknown' };
   try {
-    return { ok: true, value: await ops[op](args || {}) };
+    const a = args && typeof args === 'object' && !Array.isArray(args) ? { ...args } : {};
+    return { ok: true, value: await ops[op](checkArgs(op, a)) };
   } catch (e) {
     return { ok: false, error: e.message || String(e), status: e.status || 0, offline: !!e.offline };
   }
