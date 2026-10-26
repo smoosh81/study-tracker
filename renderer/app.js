@@ -479,8 +479,10 @@
 
   // ---------------- navigation ----------------
   let currentPage = 'timer';
+  // a subject's page sits under the Stats tab
+  const navOf = (p) => (p === 'subject' ? 'stats' : p);
   function moveIndicator() {
-    const btn = $(`.nav-item[data-page="${currentPage}"]`);
+    const btn = $(`.nav-item[data-page="${navOf(currentPage)}"]`);
     $('#nav-indicator').style.transform = `translateY(${btn.offsetTop}px)`;
   }
   // The sidebar starts with only the Timer showing; the arrow under it opens the rest.
@@ -491,7 +493,7 @@
     side.classList.toggle('nav-open', navOpen);
     let k = 0;
     $$('.nav-item').forEach((b) => {
-      const show = navOpen || b.dataset.page === 'timer' || b.dataset.page === 'settings' || b.dataset.page === currentPage;
+      const show = navOpen || b.dataset.page === 'timer' || b.dataset.page === 'settings' || b.dataset.page === navOf(currentPage);
       b.style.setProperty('--k', show && !b.classList.contains('nav-shown') ? k++ : 0);
       b.classList.toggle('nav-shown', show);
       b.classList.toggle('tucked', !show);
@@ -514,7 +516,10 @@
   function go(page) {
     if (page === currentPage) return;
     const from = $(`#page-${currentPage}`), to = $(`#page-${page}`);
-    $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.page === page));
+    $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.page === navOf(page)));
+    // the subject page slides in from the side it opens on, and back out the same way
+    const sideways = page === 'subject' ? 'fwd' : currentPage === 'subject' && page === 'stats' ? 'back' : '';
+    $('#view').dataset.dir = sideways;
     currentPage = page;
     layoutNav(true);
     from.classList.remove('active', 'enter');
@@ -531,7 +536,7 @@
   // Pages are rebuilt every time you open them, so the big ones (hundreds of tree drawings)
   // are emptied once you leave. This keeps memory down without changing what you see.
   const HEAVY = {
-    timer: ['#week-plot'], stats: ['#stats-plot'], garden: ['#garden', '#garden-plot', '#decor-shop'],
+    timer: ['#week-plot'], stats: ['#stats-plot'], subject: ['#sj-plot', '#sj-recent'], garden: ['#garden', '#garden-plot', '#decor-shop'],
     trees: ['#collection', '#cases'], badges: ['#badge-cats'], history: ['#history-list'],
     grades: ['#gr-body', '#gr-chips'], friends: ['#fr-body'],
   };
@@ -542,6 +547,7 @@
   function renderPage(p) {
     if (p === 'timer') renderTimerPage();
     if (p === 'stats') renderStats(true);
+    if (p === 'subject') renderSubject(true);
     if (p === 'garden') renderGarden();
     if (p === 'trees') renderTrees();
     if (p === 'history') renderHistory();
@@ -1324,7 +1330,9 @@
       g.addEventListener('mouseenter', (ev) => { if (!busy()) { light(g.dataset.id, true); showTip(sessionTip(x), ev); } });
       g.addEventListener('mousemove', moveTip);
       g.addEventListener('mouseleave', () => { light(g.dataset.id, false); hideTip(); });
+      if (opts.onPick) g.addEventListener('click', (e) => { if (!busy()) opts.onPick(x, e); });
     });
+    if (opts.onPick) plot.classList.add('pickable');
     $$('.dc', host).forEach((g) => {
       const d = DECOR.find((x) => x.id === g.dataset.d);
       g.addEventListener('mouseenter', (ev) => { if (!busy()) showTip(`<div class="tt-title">${esc(d.name)}</div><div class="muted">${esc(d.desc)}</div>`, ev); });
@@ -1611,12 +1619,11 @@
 
   // ---------------- stats ----------------
   const S = { period: 'day', anchor: startOfDay(new Date()), yearSplit: 'month' };
-  function periodRange() {
-    const a = S.anchor;
-    if (S.period === 'day') return [a, addDays(a, 1)];
-    if (S.period === 'week') return [a, addDays(a, 7)];
-    if (S.period === 'month') return [a, new Date(a.getFullYear(), a.getMonth() + 1, 1)];
-    if (S.period === 'year') return [a, new Date(a.getFullYear() + 1, 0, 1)];
+  function periodRange(period = S.period, a = S.anchor) {
+    if (period === 'day') return [a, addDays(a, 1)];
+    if (period === 'week') return [a, addDays(a, 7)];
+    if (period === 'month') return [a, new Date(a.getFullYear(), a.getMonth() + 1, 1)];
+    if (period === 'year') return [a, new Date(a.getFullYear() + 1, 0, 1)];
     const first = D.sessions.filter(counted).reduce((m, s) => Math.min(m, +new Date(s.date)), Date.now());
     return [new Date(new Date(first).getFullYear(), new Date(first).getMonth(), 1), addDays(startOfDay(new Date()), 1)];
   }
@@ -1627,8 +1634,8 @@
     if (period === 'year') return new Date(d.getFullYear(), 0, 1);
     return startOfDay(d);
   }
-  function shiftAnchor(dir) {
-    const a = new Date(S.anchor);
+  function shiftAnchor(dir, from = S.anchor) {
+    const a = new Date(from);
     if (S.period === 'day') a.setDate(a.getDate() + dir);
     if (S.period === 'week') a.setDate(a.getDate() + 7 * dir);
     if (S.period === 'month') a.setMonth(a.getMonth() + dir);
@@ -1706,20 +1713,31 @@
       pill.style.transform = `translateX(${act.offsetLeft}px)`;
     });
   }
-  let lastBucketSig = '';
-  function renderStats(fresh, dir) {
-    const [a, b] = periodRange();
+  const lastBucketSig = {};
+  // the period picker and arrows; the stats page and a subject's page each have their own copy ('' / 'sj-')
+  function renderPeriodHead(pfx, dir) {
     const now = new Date();
-    $$('#period-seg button').forEach((x) => x.classList.toggle('active', x.dataset.p === S.period));
-    $('#year-split').classList.toggle('hidden', S.period !== 'year');
-    $$('#year-split button').forEach((x) => x.classList.toggle('active', x.dataset.s === S.yearSplit));
+    $$(`#${pfx}period-seg button`).forEach((x) => x.classList.toggle('active', x.dataset.p === S.period));
+    $(`#${pfx}year-split`).classList.toggle('hidden', S.period !== 'year');
+    $$(`#${pfx}year-split button`).forEach((x) => x.classList.toggle('active', x.dataset.s === S.yearSplit));
     requestAnimationFrame(positionSegs);
-    const lbl = $('#period-label span');
+    const lbl = $(`#${pfx}period-label span`);
     lbl.textContent = periodLabel();
     lbl.className = dir ? (dir > 0 ? 'in-r' : 'in-l') : '';
-    $('#prev-period').disabled = S.period === 'all';
-    $('#next-period').disabled = S.period === 'all' || shiftAnchor(1) > now;
-    $('#today-period').style.visibility = (S.period === 'all' || +S.anchor === +anchorFor(S.period, now)) ? 'hidden' : 'visible';
+    $(`#${pfx}prev-period`).disabled = S.period === 'all';
+    $(`#${pfx}next-period`).disabled = S.period === 'all' || shiftAnchor(1) > now;
+    $(`#${pfx}today-period`).style.visibility = (S.period === 'all' || +S.anchor === +anchorFor(S.period, now)) ? 'hidden' : 'visible';
+  }
+  // days in the period so far (a period still running only counts up to today)
+  function periodDays(a, b) {
+    if (S.period === 'day') return 1;
+    const now = new Date();
+    const end = b > now ? addDays(startOfDay(now), 1) : b;
+    return Math.max(1, Math.round((end - a) / 864e5));
+  }
+  function renderStats(fresh, dir) {
+    const [a, b] = periodRange();
+    renderPeriodHead('', dir);
 
     const list = sessionsIn(a, b);
     const total = list.reduce((x, s) => x + s.duration, 0);
@@ -1730,16 +1748,16 @@
     // stat cards
     animateNumber($('#st-total'), total, fmtDur);
     animateNumber($('#st-sessions'), list.length, (v) => Math.round(v));
-    let days = 1;
-    if (S.period !== 'day') {
-      const end = b > now ? addDays(startOfDay(now), 1) : b;
-      days = Math.max(1, Math.round((end - a) / 864e5));
-    }
+    const days = periodDays(a, b);
     $('#st-avg-label').textContent = S.period === 'day' ? 'Average session' : 'Daily average';
     animateNumber($('#st-avg'), S.period === 'day' ? (list.length ? total / list.length : 0) : total / days, fmtDur);
     const top = $('#st-top');
     top.textContent = ranked.length ? ranked[0][0] : '-';
     top.style.color = ranked.length ? colorOf(ranked[0][0]) : '';
+    const topCard = top.closest('.stat');
+    topCard.classList.toggle('pick', !!ranked.length);
+    topCard.dataset.s = ranked.length ? ranked[0][0] : '';
+    topCard.title = ranked.length ? `See your stats for ${ranked[0][0]}` : '';
     top.classList.remove('swap'); void top.offsetWidth;
     top.style.animation = 'fadeUp .5s var(--ease)';
     setTimeout(() => { top.style.animation = ''; }, 500);
@@ -1752,11 +1770,11 @@
   }
   // The time of day you usually study: an average of the clock time of every minute studied in the
   // last 30 days (worked out on a circle, so 11 pm and 1 am average to midnight, not midday).
-  function studyTimes() {
+  function studyTimes(sub) {
     const since = Date.now() - 30 * 864e5;
     const bins = new Array(24).fill(0);
     let x = 0, y = 0, total = 0;
-    D.sessions.filter((s) => counted(s) && s.duration > 0 && new Date(s.date).getTime() >= since).forEach((s) => {
+    D.sessions.filter((s) => counted(s) && s.duration > 0 && (!sub || s.subject === sub) && new Date(s.date).getTime() >= since).forEach((s) => {
       const t0 = new Date(s.date);
       let m = t0.getHours() * 60 + t0.getMinutes() + t0.getSeconds() / 60;
       for (let left = s.duration / 60; left > 0; left -= 1, m += 1) {
@@ -1775,11 +1793,11 @@
   }
   const clockLabel = (min) => { const d = new Date(2000, 0, 1, 0, Math.round(min) % 1440); return fmtTime(d); };
   const hourLabel = (h) => new Date(2000, 0, 1, h % 24).toLocaleTimeString([], { hour: 'numeric' });
-  function renderStudyClock(fresh) {
-    const host = $('#study-clock');
+  function renderStudyClock(fresh, sub) {
+    const host = $(sub ? '#sj-clock' : '#study-clock');
     if (!host) return;
-    const r = studyTimes();
-    if (!r) { host.innerHTML = '<div class="empty">Study a few sessions this month and your usual study time shows up here.</div>'; return; }
+    const r = studyTimes(sub);
+    if (!r) { host.innerHTML = `<div class="empty">${sub ? `Study ${esc(sub)} a few times this month and your usual time for it shows up here.` : 'Study a few sessions this month and your usual study time shows up here.'}</div>`; return; }
     const mean = Math.round(r.mean / 5) * 5;
     const max = Math.max(...r.bins);
     const R0 = 46, R1 = 92;
@@ -1798,10 +1816,10 @@
         <circle cx="110" cy="110" r="${R0 - 8}" class="sc-hub"/><text x="110" y="107" class="sc-hub-t">${esc(clockLabel(mean))}</text><text x="110" y="122" class="sc-hub-s">average</text>
       </svg>
       <div class="sc-text">
-        <div class="sc-big">You usually study around <b>${esc(clockLabel(mean))}</b></div>
-        <p class="muted">That's ${part(mean)}, worked out from ${fmtDur(r.total * 60)} of study in the last 30 days.</p>
+        <div class="sc-big">You usually study${sub ? ` <span class="sc-sub">${esc(sub)}</span>` : ''} around <b>${esc(clockLabel(mean))}</b></div>
+        <p class="muted">That's ${part(mean)}, worked out from ${fmtDur(r.total * 60)} of ${sub ? esc(sub) : 'study'} in the last 30 days.</p>
         <div class="sc-rows">
-          <div><span>Busiest stretch</span><b>${esc(hourLabel(r.peak))} to ${esc(hourLabel(r.peak + 3))}</b><small>${Math.round(r.peakShare * 100)}% of your time</small></div>
+          <div><span>Busiest stretch</span><b>${esc(hourLabel(r.peak))} to ${esc(hourLabel(r.peak + 3))}</b><small>${Math.round(r.peakShare * 100)}% of ${sub ? 'this subject\'s' : 'your'} time</small></div>
           <div><span>How regular</span><b>${r.spread > 0.8 ? 'Very steady' : r.spread > 0.55 ? 'Fairly steady' : r.spread > 0.3 ? 'Mixed' : 'All over the clock'}</b><small>${r.spread > 0.55 ? 'Mostly the same time of day' : 'Your study times vary a lot'}</small></div>
         </div>
       </div>`;
@@ -1811,7 +1829,7 @@
   function renderStatsPlot(list, a) {
     const host = $('#stats-plot');
     const sorted = list.slice().sort((x, y) => new Date(x.date) - new Date(y.date));
-    const r = renderPlot(host, sorted, { seed: S.period + (a ? dayKey(a) : 'all'), key: 'st' + S.period, min: 4, count: sessionTrees });
+    const r = renderPlot(host, sorted, { seed: S.period + (a ? dayKey(a) : 'all'), key: 'st' + S.period, min: 4, count: sessionTrees, onPick: (x, e) => openSubject(x.subject, e) });
     const grown = sorted.filter((x) => !isWithered(x)).reduce((n, x) => n + sessionTrees(x), 0), dead = sorted.filter(isWithered).length;
     $('#stats-plot-counts').textContent = !sorted.length ? 'No sessions in this period yet'
       : `${grown} tree${grown === 1 ? '' : 's'}${dead ? ` · ${dead} withered` : ''}${r.shown < r.total ? ` · showing the latest ${r.shown}` : ''}`;
@@ -1839,6 +1857,7 @@
         c.addEventListener('mouseenter', (e) => { hl(name, true); showTip(`<div class="tt-title">${esc(name)}</div>${c.dataset.tip}`, e); });
         c.addEventListener('mousemove', moveTip);
         c.addEventListener('mouseleave', () => { hl(name, false); hideTip(); });
+        c.addEventListener('click', (e) => openSubject(name, e));
         void c.getBoundingClientRect();
       }
       c.style.stroke = colorOf(name);
@@ -1858,11 +1877,12 @@
       setTimeout(() => c.remove(), 1000);
     });
     animateNumber($('#donut-total'), total, fmtDur);
-    $('#legend').innerHTML = ranked.length ? ranked.map(([n, d], i) => `<div class="legend-row" style="--c:${colorOf(n)};--i:${i}" data-s="${esc(n)}"><span class="dot"></span><span class="nm">${esc(n)}<small>${fmtDur(d)}</small></span><span class="pc">${Math.round((d / total) * 100)}%</span></div>`).join('')
+    $('#legend').innerHTML = ranked.length ? ranked.map(([n, d], i) => `<div class="legend-row" style="--c:${colorOf(n)};--i:${i}" data-s="${esc(n)}" title="See your stats for ${esc(n)}"><span class="dot"></span><span class="nm">${esc(n)}<small>${fmtDur(d)}</small></span><span class="pc">${Math.round((d / total) * 100)}%</span></div>`).join('')
       : '<div class="empty">No study time in this period.</div>';
     $$('#legend .legend-row').forEach((r) => {
       r.addEventListener('mouseenter', () => hl(r.dataset.s, true));
       r.addEventListener('mouseleave', () => hl(r.dataset.s, false));
+      r.addEventListener('click', (e) => openSubject(r.dataset.s, e));
     });
   }
   function hl(name, on) {
@@ -1881,28 +1901,31 @@
     const h = sec / 3600;
     return Number.isInteger(h) ? `${h}h` : `${h.toFixed(1)}h`;
   }
-  function renderBars(fresh) {
+  // sub: only that subject's time (a subject's own page), otherwise every subject stacked
+  function renderBars(fresh, sub) {
+    const el = (id) => $(`#${sub ? 'sj-' : ''}${id}`);
     const bs = buckets();
     const titles = { day: 'By hour', week: 'By day', month: 'By week', year: S.yearSplit === 'week' ? 'By week' : 'By month', all: 'Over time' };
-    $('#bars-title').textContent = titles[S.period];
-    $('#bars-note').textContent = S.period === 'day' ? 'Hover a bar for details.' : 'Hover a bar for details. Click one to zoom in.';
+    el('bars-title').textContent = titles[S.period];
+    el('bars-note').textContent = sub ? (S.period === 'day' ? 'Hover a bar for details.' : 'Hover a bar for details. Click one to zoom in.')
+      : S.period === 'day' ? 'Hover a bar for details. Click a colour to see that subject.' : 'Click a colour to see that subject, or the rest of a bar to zoom in.';
     const data = bs.map((bk) => {
       const by = {};
       let tot = 0;
-      sessionsIn(bk.s, bk.e).forEach((s) => { by[s.subject] = (by[s.subject] || 0) + s.duration; tot += s.duration; });
+      sessionsIn(bk.s, bk.e).forEach((s) => { if (sub && s.subject !== sub) return; by[s.subject] = (by[s.subject] || 0) + s.duration; tot += s.duration; });
       return { ...bk, by, tot };
     });
     const max = niceMax(Math.max(0, ...data.map((d) => d.tot)));
     // grid lines
-    const grid = $('#bars-grid');
+    const grid = el('bars-grid');
     grid.innerHTML = [0, 0.25, 0.5, 0.75, 1].map((f) => {
       return `<div class="gl" style="bottom:${f * 100}%"><span>${axisLabel(max * f)}</span></div>`;
     }).join('');
-    const cols = $('#bars-cols');
+    const cols = el('bars-cols');
     const sig = `${S.period}-${S.yearSplit}-${bs.length}`;
     cols.style.setProperty('--gap', bs.length > 30 ? '3px' : bs.length > 14 ? '5px' : '10px');
-    const rebuild = fresh || sig !== lastBucketSig;
-    lastBucketSig = sig;
+    const rebuild = fresh || sig !== lastBucketSig[!!sub];
+    lastBucketSig[!!sub] = sig;
     const nowT = Date.now();
     if (rebuild) {
       cols.innerHTML = data.map((d, i) => `<div class="bcol" style="--i:${i}"><div class="bstack"></div><span class="blabel">${d.label}</span></div>`).join('');
@@ -1919,7 +1942,10 @@
       const segs = new Map($$('div', stack).map((x) => [x.dataset.s, x]));
       order.forEach((n) => {
         let seg = segs.get(n);
-        if (!seg) { seg = document.createElement('div'); seg.dataset.s = n; seg.style.height = '0%'; stack.appendChild(seg); }
+        if (!seg) {
+          seg = document.createElement('div'); seg.dataset.s = n; seg.style.height = '0%'; stack.appendChild(seg);
+          if (!sub) seg.addEventListener('click', (e) => { e.stopPropagation(); openSubject(n, e); });
+        }
         seg.style.background = colorOf(n);
         segs.delete(n);
         requestAnimationFrame(() => { seg.style.height = (d.tot ? (d.by[n] / d.tot) * 100 : 0) + '%'; });
@@ -1941,7 +1967,7 @@
         hideTip();
         S.period = d.zoom[0];
         S.anchor = anchorFor(d.zoom[0], d.zoom[1]);
-        renderStats(true, 1);
+        if (sub) renderSubject(true, 1); else renderStats(true, 1);
       };
     });
   }
@@ -1949,10 +1975,167 @@
     const host = $('#hbars');
     if (!ranked.length) { host.innerHTML = '<div class="empty">Study something and it will show up here.</div>'; return; }
     const max = ranked[0][1];
-    host.innerHTML = ranked.map(([n, d], i) => `<div class="hbar" style="--c:${colorOf(n)};--i:${i}"><span class="nm"><i></i>${esc(n)}</span><div class="track"><div class="fill"></div></div><span class="v">${fmtDur(d)}</span></div>`).join('');
+    host.innerHTML = ranked.map(([n, d], i) => `<div class="hbar pick" style="--c:${colorOf(n)};--i:${i}" data-s="${esc(n)}" title="See your stats for ${esc(n)}"><span class="nm"><i></i>${esc(n)}</span><div class="track"><div class="fill"></div></div><span class="v">${fmtDur(d)}</span></div>`).join('');
     requestAnimationFrame(() => requestAnimationFrame(() => {
       $$('.hbar .fill', host).forEach((f, i) => { f.style.width = `${(ranked[i][1] / max) * 100}%`; f.style.transitionDelay = `${i * 50}ms`; });
     }));
+    $$('.hbar', host).forEach((r) => r.addEventListener('click', (e) => openSubject(r.dataset.s, e)));
+  }
+  // ---------------- one subject's stats ----------------
+  // Clicking a subject anywhere on the Stats page opens this page. It shares the period with Stats,
+  // so going back lands on the same day / week / month you were looking at.
+  const SJ = { name: null };
+  const ordinal = (n) => n + (['th', 'st', 'nd', 'rd'][(n % 100 >> 3) ^ 1 && n % 10] || 'th');
+  // a soft wash of the subject's colour spreading out from where you clicked
+  function colourWash(x, y, color) {
+    const w = document.createElement('div');
+    w.className = 'sj-wash';
+    w.style.left = x + 'px'; w.style.top = y + 'px';
+    w.style.setProperty('--c', color);
+    w.style.setProperty('--s', Math.ceil(Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y)) / 10));
+    document.body.appendChild(w);
+    setTimeout(() => w.remove(), 900);
+  }
+  function openSubject(name, e) {
+    if (!name) return;
+    hideTip();
+    if (e && e.clientX != null) colourWash(e.clientX, e.clientY, colorOf(name));
+    const same = currentPage === 'subject';
+    SJ.name = name;
+    if (same) {
+      const pg = $('#page-subject');
+      $$('.stagger.anim-done', pg).forEach((el) => el.classList.remove('anim-done'));
+      pg.classList.remove('enter'); void pg.offsetWidth; pg.classList.add('enter');
+      pg.scrollTop = 0;
+      renderSubject(true);
+    } else go('subject');
+  }
+  // days in a row this subject was studied, up to today (or yesterday, if not yet today)
+  function subjectStreak(list) {
+    const days = new Set(list.map((s) => dayKey(new Date(s.date))));
+    let d = new Date(), n = 0;
+    if (!days.has(dayKey(d))) d = addDays(d, -1);
+    while (days.has(dayKey(d))) { n++; d = addDays(d, -1); }
+    return n;
+  }
+  function renderSubject(fresh, dir) {
+    const name = SJ.name;
+    if (!name) return;
+    const color = colorOf(name);
+    const pg = $('#page-subject');
+    pg.style.setProperty('--sc', color);
+    renderPeriodHead('sj-', dir);
+    $('#sj-name').textContent = name;
+    $('#sj-badge').textContent = (name.trim()[0] || '?').toUpperCase();
+    const s = subj(name);
+    $('#sj-sub').textContent = !s ? 'Removed subject · its saved sessions still count' : s.archived ? 'Finished subject · its stats are kept' : 'Only this subject, from your saved sessions';
+
+    const [a, b] = periodRange();
+    const every = sessionsIn(a, b);
+    const list = every.filter((x) => x.subject === name);
+    const total = list.reduce((x, y) => x + y.duration, 0);
+    const allTotal = every.reduce((x, y) => x + y.duration, 0);
+    animateNumber($('#sj-total'), total, fmtDur);
+    animateNumber($('#sj-sessions'), list.length, (v) => Math.round(v));
+    $('#sj-avg-label').textContent = S.period === 'day' ? 'Average session' : 'Daily average';
+    animateNumber($('#sj-avg'), S.period === 'day' ? (list.length ? total / list.length : 0) : total / periodDays(a, b), fmtDur);
+    animateNumber($('#sj-share'), allTotal ? (total / allTotal) * 100 : 0, (v) => `${Math.round(v)}%`);
+
+    renderSubjectHighlights(name);
+    renderSubjectShare(name, every, total, allTotal);
+    renderBars(fresh, name);
+    const sorted = list.slice().sort((x, y) => new Date(x.date) - new Date(y.date));
+    const host = $('#sj-plot');
+    const r = renderPlot(host, sorted, { seed: 'sj' + name + S.period + dayKey(a), key: 'sj' + S.period, min: 3, count: sessionTrees });
+    const grown = sorted.filter((x) => !isWithered(x)).reduce((n, x) => n + sessionTrees(x), 0), dead = sorted.filter(isWithered).length;
+    $('#sj-plot-counts').textContent = !sorted.length ? 'No sessions in this period yet'
+      : `${grown} tree${grown === 1 ? '' : 's'}${dead ? ` · ${dead} withered` : ''}${r.shown < r.total ? ` · showing the latest ${r.shown}` : ''}`;
+    if (!sorted.length) host.insertAdjacentHTML('beforeend', `<div class="plot-empty">Study ${esc(name)} in this period to plant a tree here</div>`);
+    $('#sj-clock-title').textContent = `When you study ${name}`;
+    renderStudyClock(fresh, name);
+    renderSubjectRecent(name, list);
+  }
+  // all-time numbers, not tied to the period
+  function renderSubjectHighlights(name) {
+    const all = D.sessions.filter((x) => counted(x) && x.subject === name);
+    const host = $('#sj-high');
+    const tiles = [];
+    if (all.length) {
+      const total = all.reduce((x, y) => x + y.duration, 0);
+      const longest = all.reduce((m, x) => (x.duration > m.duration ? x : m), all[0]);
+      const byDay = {};
+      all.forEach((x) => { const k = dayKey(new Date(x.date)); byDay[k] = (byDay[k] || 0) + x.duration; });
+      const best = Object.entries(byDay).sort((x, y) => y[1] - x[1])[0];
+      const first = all.reduce((m, x) => Math.min(m, +new Date(x.date)), Infinity);
+      const streak = subjectStreak(all);
+      const trees = all.filter((x) => !isWithered(x)).reduce((n, x) => n + sessionTrees(x), 0);
+      const dshort = (d) => d.toLocaleDateString([], { day: 'numeric', month: 'short', year: d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' });
+      const [by, bm, bd] = best[0].split('-').map(Number);
+      tiles.push(['All time', fmtDur(total), `${all.length} session${all.length === 1 ? '' : 's'}`]);
+      tiles.push(['Longest session', fmtDur(longest.duration), dshort(new Date(longest.date))]);
+      tiles.push(['Best day', fmtDur(best[1]), dshort(new Date(by, bm - 1, bd))]);
+      tiles.push(['Streak', `${streak} day${streak === 1 ? '' : 's'}`, streak ? 'in a row' : 'study it today to start one']);
+      tiles.push(['Trees grown', String(trees), `since ${dshort(new Date(first))}`]);
+    }
+    // this semester's grade, if there is one
+    const rows = semRows(name, curSem());
+    const cw = gradeMath(courseRows(rows)), ex = gradeMath(examRows(rows));
+    const gTile = (label, m) => { const g = letterOf(m.avg); return `<button class="sj-tile grade" data-go="grades" style="--i:${tiles.length + 1};--gc:${gradeColor(g)}"><span>${label}</span><b>${g ? esc(g.l) : ''} <em>${Math.round(m.avg)}%</em></b><small>Open in Grades</small></button>`; };
+    host.innerHTML = (tiles.length ? tiles.map(([l, v, sm], i) => `<div class="sj-tile" style="--i:${i}"><span>${l}</span><b>${esc(v)}</b><small>${esc(sm)}</small></div>`).join('')
+      : '<div class="sj-tile wide"><span>All time</span><b>Nothing saved yet</b><small>Finish a session of this subject and it shows up here</small></div>')
+      + (cw.avg != null ? gTile(`Semester ${curSem()} grade`, cw) : '') + (ex.avg != null ? gTile(`Semester ${curSem()} exam`, ex) : '');
+    $$('.sj-tile[data-go="grades"]', host).forEach((t) => t.addEventListener('click', () => { G.subject = name; G.sem = curSem(); go('grades'); }));
+  }
+  // how this subject compares with the others in the period, and with the period before
+  function renderSubjectShare(name, every, total, allTotal) {
+    const C = 2 * Math.PI * 84;
+    const ring = $('#sj-ring');
+    const frac = allTotal ? total / allTotal : 0;
+    ring.style.stroke = colorOf(name);
+    ring.style.strokeDasharray = `0 ${C}`;
+    void ring.getBoundingClientRect();
+    requestAnimationFrame(() => { ring.style.strokeDasharray = `${frac * C} ${C}`; });
+    animateNumber($('#sj-ring-pc'), frac * 100, (v) => `${Math.round(v)}%`);
+    const by = {};
+    every.forEach((x) => { by[x.subject] = (by[x.subject] || 0) + x.duration; });
+    const ranked = Object.entries(by).sort((x, y) => y[1] - x[1]);
+    const rank = ranked.findIndex(([n]) => n === name) + 1;
+    const word = { day: 'today', week: 'this week', month: 'this month', year: 'this year', all: 'of all time' }[S.period];
+    const now = new Date();
+    const isNow = S.period === 'all' || +S.anchor === +anchorFor(S.period, now);
+    const when = isNow ? word : { day: 'that day', week: 'that week', month: 'that month', year: 'that year' }[S.period];
+    let html = `<div class="sj-rank">${rank ? `<b>${ordinal(rank)}</b> of ${ranked.length} subject${ranked.length === 1 ? '' : 's'} ${when}` : `Not studied ${when}`}</div>`;
+    if (S.period !== 'all') {
+      const prevA = shiftAnchor(-1);
+      const [pa, pb] = periodRange(S.period, prevA);
+      const prev = sessionsIn(pa, pb).filter((x) => x.subject === name).reduce((x, y) => x + y.duration, 0);
+      const label = { day: 'the day before', week: 'the week before', month: 'the month before', year: 'the year before' }[S.period];
+      const diff = total - prev;
+      const cls = diff > 0 ? 'up' : diff < 0 ? 'down' : 'same';
+      const pct = prev ? Math.round((Math.abs(diff) / prev) * 100) : null;
+      html += `<div class="sj-vs ${cls}"><i>${diff > 0 ? '▲' : diff < 0 ? '▼' : '='}</i><span>${diff ? `${fmtDur(Math.abs(diff))} ${diff > 0 ? 'more' : 'less'} than ${label}${pct != null ? ` (${pct}%)` : ''}` : `Same as ${label}`}</span></div>`;
+    }
+    html += ranked.length ? `<div class="sj-mini">${ranked.map(([n, d], i) => `<div class="sj-mini-row${n === name ? ' me' : ''}" style="--c:${colorOf(n)};--i:${i}" data-s="${esc(n)}"${n === name ? '' : ` title="See your stats for ${esc(n)}"`}><span class="dot"></span><span class="nm">${esc(n)}</span><span class="track"><span class="fill" style="--w:${((d / ranked[0][1]) * 100).toFixed(1)}%"></span></span><span class="v">${fmtDur(d)}</span></div>`).join('')}</div>`
+      : '<div class="empty">No study time in this period.</div>';
+    $('#sj-compare').innerHTML = html;
+    $$('#sj-compare .sj-mini-row:not(.me)').forEach((r) => r.addEventListener('click', (e) => openSubject(r.dataset.s, e)));
+  }
+  function renderSubjectRecent(name, list) {
+    const host = $('#sj-recent');
+    const rows = list.slice().sort((x, y) => new Date(y.date) - new Date(x.date));
+    const SHOW = 12;
+    if (!rows.length) { host.innerHTML = '<div class="empty">No sessions of this subject in this period.</div>'; $('#sj-recent-more').classList.add('hidden'); return; }
+    let lastDay = '';
+    host.innerHTML = rows.slice(0, SHOW).map((x, i) => {
+      const d = new Date(x.date), k = dayKey(d);
+      const head = S.period !== 'day' && k !== lastDay ? `<div class="sj-day" style="--i:${i}">${d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}</div>` : '';
+      lastDay = k;
+      return head + sessRow(x, i, { del: false });
+    }).join('');
+    paintTrees(host);
+    const more = $('#sj-recent-more');
+    more.classList.remove('hidden');
+    more.textContent = rows.length > SHOW ? `See all ${rows.length} in History` : 'Open in History';
   }
 
   // ---------------- garden ----------------
@@ -3406,20 +3589,33 @@
       }
       if (e.target.matches('input, select, textarea') || $('.modal-back') || !$('#onboarding').classList.contains('hidden') || !$('#case-overlay').classList.contains('hidden')) return;
       if (e.code === 'Space' && currentPage === 'timer') { e.preventDefault(); start(); }
+      if ((e.key === 'Escape' || e.key === 'Backspace') && currentPage === 'subject') { e.preventDefault(); go('stats'); }
       if (e.ctrlKey && e.key >= '1' && e.key <= '9') go(['timer', 'stats', 'grades', 'garden', 'trees', 'friends', 'badges', 'history', 'settings'][+e.key - 1]);
     });
 
-    // stats
-    $$('#period-seg button').forEach((b) => b.addEventListener('click', () => {
-      if (S.period === b.dataset.p) return;
-      S.period = b.dataset.p;
-      S.anchor = anchorFor(S.period, new Date());
-      renderStats(true);
-    }));
-    $$('#year-split button').forEach((b) => b.addEventListener('click', () => { S.yearSplit = b.dataset.s; renderStats(true); }));
-    $('#prev-period').addEventListener('click', () => { S.anchor = shiftAnchor(-1); renderStats(false, -1); });
-    $('#next-period').addEventListener('click', () => { S.anchor = shiftAnchor(1); renderStats(false, 1); });
-    $('#today-period').addEventListener('click', () => { S.anchor = anchorFor(S.period, new Date()); renderStats(false, 1); });
+    // stats, and a subject's own page (same period controls, 'sj-' ids)
+    [['', renderStats], ['sj-', renderSubject]].forEach(([pfx, render]) => {
+      $$(`#${pfx}period-seg button`).forEach((b) => b.addEventListener('click', () => {
+        if (S.period === b.dataset.p) return;
+        S.period = b.dataset.p;
+        S.anchor = anchorFor(S.period, new Date());
+        render(true);
+      }));
+      $$(`#${pfx}year-split button`).forEach((b) => b.addEventListener('click', () => { S.yearSplit = b.dataset.s; render(true); }));
+      $(`#${pfx}prev-period`).addEventListener('click', () => { S.anchor = shiftAnchor(-1); render(false, -1); });
+      $(`#${pfx}next-period`).addEventListener('click', () => { S.anchor = shiftAnchor(1); render(false, 1); });
+      $(`#${pfx}today-period`).addEventListener('click', () => { S.anchor = anchorFor(S.period, new Date()); render(false, 1); });
+    });
+    $('#stat-cards').addEventListener('click', (e) => { const c = e.target.closest('.stat.pick'); if (c && c.dataset.s) openSubject(c.dataset.s, e); });
+    $('#sj-back').addEventListener('click', () => go('stats'));
+    // the mouse's back button also leaves a subject's page
+    addEventListener('mouseup', (e) => { if (e.button === 3 && currentPage === 'subject') go('stats'); });
+    $('#sj-recent-more').addEventListener('click', () => {
+      renderHistory();
+      const sel = $('#hist-filter');
+      if ([...sel.options].some((o) => o.value === SJ.name)) { sel.value = SJ.name; histLimit = 30; }
+      go('history');
+    });
 
     // history
     $('#hist-filter').addEventListener('change', () => { histLimit = 30; renderHistory(); });
