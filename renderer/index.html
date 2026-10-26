@@ -155,6 +155,68 @@
       </div>
     </section>
 
+    <!-- ONE SUBJECT'S STATS (opened by clicking a subject on the Stats page) -->
+    <section class="page" id="page-subject">
+      <div class="sj-hero stagger" style="--i:0">
+        <div class="sj-glow"></div>
+        <button class="btn small ghost sj-back" id="sj-back" title="Back to stats (Esc)"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>Back to stats</button>
+        <div class="sj-id">
+          <span class="sj-badge" id="sj-badge"></span>
+          <div><h1 id="sj-name"></h1><p class="sub" id="sj-sub"></p></div>
+        </div>
+        <div class="sj-high" id="sj-high"></div>
+      </div>
+      <div class="sj-bar stagger" style="--i:1">
+        <div class="period-nav">
+          <button class="icon-btn" id="sj-prev-period"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
+          <div class="period-label" id="sj-period-label"><span></span></div>
+          <button class="icon-btn" id="sj-next-period"><svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg></button>
+          <button class="btn small ghost" id="sj-today-period">Jump to now</button>
+        </div>
+        <div class="seg" id="sj-period-seg">
+          <div class="seg-pill"></div>
+          <button data-p="day" class="active">Day</button><button data-p="week">Week</button><button data-p="month">Month</button><button data-p="year">Year</button><button data-p="all">All time</button>
+        </div>
+      </div>
+      <div class="stat-cards sj-cards stagger" style="--i:2">
+        <div class="stat"><span class="s-label">Time studied</span><span class="s-val" id="sj-total">0h</span></div>
+        <div class="stat"><span class="s-label">Sessions</span><span class="s-val" id="sj-sessions">0</span></div>
+        <div class="stat"><span class="s-label" id="sj-avg-label">Daily average</span><span class="s-val" id="sj-avg">0h</span></div>
+        <div class="stat"><span class="s-label">Share of your study</span><span class="s-val" id="sj-share">0%</span></div>
+      </div>
+      <div class="stats-grid">
+        <div class="card stagger" style="--i:3">
+          <div class="card-head"><h3>Compared with your other subjects</h3></div>
+          <div class="sj-share-wrap">
+            <div class="donut-box sj-ring-box">
+              <svg viewBox="0 0 220 220" class="donut"><circle cx="110" cy="110" r="84" class="donut-track"/><circle cx="110" cy="110" r="84" class="sj-ring" id="sj-ring"/></svg>
+              <div class="donut-center"><span id="sj-ring-pc">0%</span><small>of your study</small></div>
+            </div>
+            <div class="sj-compare" id="sj-compare"></div>
+          </div>
+        </div>
+        <div class="card stagger" style="--i:4">
+          <div class="card-head"><h3 id="sj-bars-title">By hour</h3>
+            <div class="seg tiny hidden" id="sj-year-split"><div class="seg-pill"></div><button data-s="month" class="active">Months</button><button data-s="week">Weeks</button></div>
+          </div>
+          <div class="bars sj-bars"><div class="bars-grid" id="sj-bars-grid"></div><div class="bars-cols" id="sj-bars-cols"></div></div>
+          <p class="muted tiny-note" id="sj-bars-note"></p>
+        </div>
+      </div>
+      <div class="card plot-card stagger" style="--i:5">
+        <div class="card-head"><h3>Its forest</h3><span class="plot-counts" id="sj-plot-counts"></span></div>
+        <div class="plot-host stats-plot" id="sj-plot"></div>
+      </div>
+      <div class="card study-clock-card stagger" style="--i:6">
+        <div class="card-head"><h3 id="sj-clock-title">When you study it</h3><span class="plot-counts">Last 30 days</span></div>
+        <div class="study-clock" id="sj-clock"></div>
+      </div>
+      <div class="card stagger" style="--i:7">
+        <div class="card-head"><h3>Sessions in this period</h3><button class="btn small ghost hidden" id="sj-recent-more">Open in History</button></div>
+        <div class="sj-recent" id="sj-recent"></div>
+      </div>
+    </section>
+
     <!-- CALENDAR -->
 
     <!-- GRADES -->
