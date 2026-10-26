@@ -120,7 +120,7 @@
       v: 1, coins: d.coins, trees: C.totalTrees(), withered: C.witheredCount(), owned: d.collection.owned, opened: d.collection.opened || 0,
       badges: d.achievements, total: counted.reduce((a, s) => a + s.duration, 0), longest: counted.reduce((m, s) => Math.max(m, s.duration), 0),
       count: counted.length, streak: C.streakDays(), subjects, sessions, days: myDays(), decor: d.decor,
-      show: myShowcase(), live: liveNow(),
+      show: myShowcase(), live: liveNow(), garden: C.gardenShare(),
     });
   }
   // what I'm doing right now, for the online / studying dot friends see
@@ -647,7 +647,7 @@
   }
 
   // ---------------- friend profile ----------------
-  const TABS = [['stats', 'Stats'], ['sessions', 'Sessions'], ['trees', 'Trees'], ['badges', 'Badges'], ['grades', 'Grades'], ['together', 'Together'], ['gift', 'Gift']];
+  const TABS = [['stats', 'Stats'], ['garden', 'Garden'], ['sessions', 'Sessions'], ['trees', 'Trees'], ['badges', 'Badges'], ['grades', 'Grades'], ['together', 'Together'], ['gift', 'Gift']];
   function openProfile(uid, tab) {
     F.view = uid;
     F.tab = tab || 'stats';
@@ -720,10 +720,10 @@
     void body.offsetWidth;
     if (dir) body.classList.add(dir > 0 ? 'slide-r' : 'slide-l');
     const info = f.info || {};
-    const fn = { stats: tabStats, sessions: tabSessions, trees: tabTrees, badges: tabBadges, grades: tabGrades, together: tabTogether, gift: tabGift }[F.tab];
+    const fn = { stats: tabStats, garden: tabGarden, sessions: tabSessions, trees: tabTrees, badges: tabBadges, grades: tabGrades, together: tabTogether, gift: tabGift }[F.tab];
     body.innerHTML = fn(f, info);
     C.paintTrees(body);
-    const after = { together: wireTogether, gift: wireGift, stats: wireStats }[F.tab];
+    const after = { together: wireTogether, gift: wireGift, stats: wireStats, garden: wireGarden }[F.tab];
     if (after) after(f, body);
   }
 
@@ -760,6 +760,28 @@
       b.addEventListener('mousemove', C.moveTip);
       b.addEventListener('mouseleave', C.hideTip);
     });
+  }
+  // their garden, laid out the way they arranged it, with their decorations
+  function tabGarden(f, info) {
+    const who = C.esc(shownName(f.name));
+    if (!info.garden) {
+      return `<div class="card fr-locked"><div class="fr-lock-art"><svg viewBox="0 0 24 24"><path d="M12 21v-7M12 14c-4 0-6-3-6-7 4 0 6 3 6 7zM12 12c0-4 2-7 6-7 0 4-2 7-6 7z"/></svg></div><h3>${who}'s garden isn't here yet</h3><p class="muted">Gardens show up once ${who} updates the app to the newest version.</p></div>`;
+    }
+    return `<div class="card garden-scene fr-garden">
+        <div class="sky"><div class="night-sky"></div><div class="stars"></div><div class="sun"></div><div class="moon"></div><div class="cloud c1"></div><div class="cloud c2"></div><div class="cloud c3"></div></div>
+        <div class="plot-host" id="fr-garden-plot"></div>
+        <div class="gs-life">${C.butterflies(3, 'fr' + f.uid)}</div>
+        <div class="gs-caption" id="fr-garden-cap"></div>
+      </div>`;
+  }
+  function wireGarden(f, body) {
+    const host = $('#fr-garden-plot', body);
+    if (!host) return;
+    const info = f.info || {};
+    C.makeStars();
+    const r = C.friendGarden(host, info.garden, info.decor);
+    const cap = $('#fr-garden-cap', body);
+    cap.innerHTML = r.count ? `<b>${r.count}</b> tree${r.count === 1 ? '' : 's'} · ${C.fmtDur(r.total)} of growing` : `${C.esc(shownName(f.name))} hasn't grown any trees yet`;
   }
   function tabSessions(f, info) {
     const list = info.sessions || [];

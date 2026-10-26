@@ -1189,7 +1189,7 @@
       <div class="tt-row"><span>Duration</span><b>${fmtDur(x.duration)}</b></div>
       <div class="tt-row"><span>Trees</span><b>${isWithered(x) ? '1 withered' : sessionTrees(x)}</b></div>
       <div class="tt-row"><span>Tree</span><b>${x.tree ? esc(sp.name) : 'Oak (older session)'}</b></div>
-      <div class="tt-row"><span>Subject</span><b><i style="--c:${colorOf(x.subject)}"></i>${esc(x.subject)}</b></div>
+      <div class="tt-row"><span>Subject</span><b><i style="--c:${x.color || colorOf(x.subject)}"></i>${esc(x.subject)}</b></div>
       ${isWithered(x) || x.coins ? `<div class="tt-row"><span>Result</span><b>${state}${x.coins ? ` · +${x.coins} coins` : ''}</b></div>` : ''}`;
   }
   // Put each session's trees on neighbouring cells. Sessions start at scattered cells and spread
@@ -1978,6 +1978,42 @@
     });
     const total = trees.reduce((a, t) => a + (t.duration || 0), 0), count = trees.reduce((a, t) => a + treeCountOf(t), 0);
     $('#gs-caption').innerHTML = trees.length ? `<b>${count}</b> tree${count === 1 ? '' : 's'} · ${fmtDur(total)} of growing${r.shown < r.total ? ` · showing the latest ${r.shown}` : ''}<span class="gs-hint"> · hold to move things</span>` : 'Your first tree will appear here after 10 minutes of study';
+  }
+  // What friends get to see of my garden: the same trees, decorations and layout as my own
+  // "All trees" view. Each tree is [id, species, date, seconds, subject number, withered].
+  function gardenShare() {
+    const items = gardenItems(D.trees).slice(-PLOT_MAX);
+    const subs = [], idx = new Map();
+    const t = items.map((x) => {
+      if (!idx.has(x.subject)) { idx.set(x.subject, subs.length); subs.push([x.subject, colorOf(x.subject)]); }
+      return [String(x.id), treeOfSession(x), x.date, Math.round(x.duration), idx.get(x.subject), isWithered(x) ? 1 : 0];
+    });
+    return { t, s: subs, p: D.gardenSpots['*'] || null };
+  }
+  // A friend's garden, drawn just like mine but look-only. Everything in it came from someone
+  // else's computer, so it's checked before use.
+  function friendGarden(host, g, decorCounts) {
+    const okColor = (c) => (typeof c === 'string' && /^#[0-9a-f]{3,8}$/i.test(c) ? c : '#94a3b8');
+    const subs = Array.isArray(g && g.s) ? g.s : [];
+    const items = (Array.isArray(g && g.t) ? g.t : []).slice(-PLOT_MAX).map((r) => {
+      if (!Array.isArray(r)) return null;
+      const sub = Array.isArray(subs[r[4]]) ? subs[r[4]] : [];
+      const date = new Date(r[2]);
+      if (isNaN(date)) return null;
+      return { id: String(r[0]).slice(0, 40), tree: window.Tree.get(r[1]).id, date: date.toISOString(), duration: Math.max(0, Math.min(86400, +r[3] || 0)),
+        subject: String(sub[0] || 'Study').slice(0, 60), color: okColor(sub[1]), outcome: r[5] ? 'withered' : 'grown' };
+    }).filter(Boolean).sort((a, b) => new Date(a.date) - new Date(b.date));
+    const decor = DECOR.flatMap((d) => Array(Math.max(0, Math.min(d.max, Math.floor(+(decorCounts || {})[d.id] || 0)))).fill(d.id));
+    let spots = null;
+    if (g && g.p && typeof g.p === 'object') {
+      spots = {};
+      Object.entries(g.p).slice(0, 2000).forEach(([k, c]) => {
+        if (Array.isArray(c) && Number.isInteger(c[0]) && Number.isInteger(c[1]) && c[0] >= 0 && c[1] >= 0 && c[0] < 60 && c[1] < 60) spots[k] = [c[0], c[1]];
+      });
+    }
+    if (!items.length && !decor.length) return { count: 0, total: 0 };
+    renderPlot(host, items, { seed: 'garden', key: 'fg', min: 5, count: () => 1, decor, spots });
+    return { count: items.length, total: items.reduce((a, x) => a + x.duration, 0) };
   }
   function renderGarden() {
     animateNumber($('#g-trees'), totalTrees(), (v) => Math.round(v), 600);
@@ -3551,7 +3587,7 @@
       D: () => D, readOnly: () => readOnly, currentPage: () => currentPage,
       save, toast, modal, burst, esc, fmtDur, fmtTime, dayKey, startOfDay, startOfWeek, addDays,
       counted, isWithered, sessionTrees, totalTrees, witheredCount, colorOf, streakDays, elapsedSec, owns,
-      staticTree, paintTrees, flyCoins, flyGift, renderCoins, showTip, moveTip, hideTip, positionSegs,
+      staticTree, paintTrees, gardenShare, friendGarden, butterflies, makeStars, flyCoins, flyGift, renderCoins, showTip, moveTip, hideTip, positionSegs,
       checkAchievements, updateNavDots, gradeSummary, rewardChip, rewardText, caseName, CASES, BADGES, TIERS, badgeSvg,
       caseColor: (id) => (CASES.find((c) => c.id === id) || { color: '#fbbf24' }).color,
       validTree: (id) => (window.Tree.SPECIES.some((x) => x.id === id) ? id : 'oak'),

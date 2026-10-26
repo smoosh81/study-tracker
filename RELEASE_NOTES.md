@@ -1,8 +1,4 @@
-New in 1.14.0:
-- New tree models: 16 trees now have their own shape instead of being a recolour. Look out for the birch, the maple leaf, the crystal Twilight, the flame Ember, the sunburst Sunfire and more.
-- Exams: each exam can have its own exam grade, kept apart from your coursework, or count towards your coursework. Click the pill under the exam's name to switch. "What do I need?" works for both.
-- Trees and stats now only update once a session is finished and saved. A cancelled session plants nothing.
-- Trees only wiggle when the mouse touches the tree itself, not the empty space around it.
-- The dot on the timer ring is filled in with the ring's colour again.
-- Mini player: the ring goes round once an hour, in its usual colours.
-- Fixed the Friends tab flashing closed and open again just after you opened it.
+New in 1.15.0:
+- Visit your friends' gardens: open a friend on the Friends tab and pick the new Garden tab to see their trees and decorations, laid out exactly how they arranged them.
+- Hover a tree in a friend's garden to see when they grew it, for how long and for which subject.
+- Your garden is shared with friends the same way, and any change you make shows up for them within a couple of minutes.
