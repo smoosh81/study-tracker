@@ -69,6 +69,14 @@ async function fetchJson(url) {
   return res.json();
 }
 
+// file names in latest.json must be plain names, and every download needs a checksum
+const FILE_RE = /^[A-Za-z0-9._-]{1,120}$/;
+function checkFile(f) {
+  if (!f || typeof f.name !== 'string' || !FILE_RE.test(f.name) || f.name.startsWith('.')) throw new Error('the update info looks wrong');
+  if (typeof f.sha256 !== 'string' || !/^[0-9a-f]{64}$/i.test(f.sha256)) throw new Error('the update has no checksum');
+  return f;
+}
+
 async function download(url, dest, size, sha256) {
   const res = await net.fetch(url, { cache: 'no-store', headers: { 'User-Agent': 'Study-Tracker-Updater' } });
   if (!res.ok || !res.body) throw new Error(`download failed (HTTP ${res.status})`);
@@ -87,7 +95,7 @@ async function download(url, dest, size, sha256) {
   const tmp = dest + '.part';
   await pipeline(Readable.fromWeb(res.body), meter, fs.createWriteStream(tmp));
   const digest = hash.digest('hex');
-  if (sha256 && digest.toLowerCase() !== String(sha256).toLowerCase()) {
+  if (!sha256 || digest.toLowerCase() !== String(sha256).toLowerCase()) {
     try { fs.unlinkSync(tmp); } catch (e) {}
     throw new Error('the download was damaged (checksum did not match)');
   }
@@ -139,7 +147,8 @@ async function check(manual = false) {
     try {
       setState({ status: 'checking', error: null });
       const m = await fetchJson(`https://github.com/${repo}/releases/latest/download/latest.json`);
-      if (!m || !m.version || !newer(m.version, app.getVersion())) {
+      if (!m || typeof m.version !== 'string' || !/^\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(m.version)) throw new Error('the update info looks wrong');
+      if (!newer(m.version, app.getVersion())) {
         setState({ status: 'current', version: m && m.version, lastChecked: Date.now() });
         return state;
       }
@@ -151,11 +160,13 @@ async function check(manual = false) {
       let p;
       if (m.asar && m.electron && m.electron === process.versions.electron) {
         const dest = path.join(dir, 'app.asar.new');
+        checkFile(m.asar);
         await download(base + m.asar.name, dest, m.asar.size, m.asar.sha256);
         p = { version: m.version, kind: 'asar', source: dest };
       } else {
         if (!m.zip) throw new Error('no full download in this release');
         const zip = path.join(dir, 'update.zip');
+        checkFile(m.zip);
         await download(base + m.zip.name, zip, m.zip.size, m.zip.sha256);
         setState({ status: 'unpacking' });
         await unzip(zip, path.join(dir, 'unpacked'));

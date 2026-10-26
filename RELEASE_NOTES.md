@@ -1,5 +1,5 @@
-New in 1.16.0:
-- Click any subject on the Stats page to open a page just for that subject. It works on the pie chart, its list, the colours in the bar chart, the subject breakdown bars, the Top subject card and the trees in your forest.
-- Each subject's page shows its time, sessions, daily average and share of your study for the day, week, month or year you pick, plus how it compares with your other subjects and with the period before.
-- It also shows all-time highlights (total time, longest session, best day, streak and trees grown), this semester's grade if you have one, its own forest, the time of day you usually study it and the sessions in that period.
-- Press Back, Esc or your mouse's back button to return to Stats on the same period.
+New in 1.17.0:
+- Safety update: everything friends share with you is now checked before it's shown, so nobody can sneak links or fake buttons into your app through their profile, garden or grades.
+- The app can no longer be sent to a website or open other programs from inside its window. Only the "download the update" link opens your browser.
+- You can now block someone from the friend requests list, and only the 20 newest requests are shown, so a flood of requests can't bury the page.
+- Updates are checked more strictly before they install.
