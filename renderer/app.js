@@ -479,8 +479,8 @@
 
   // ---------------- navigation ----------------
   let currentPage = 'timer';
-  // a subject's page sits under the Stats tab
-  const navOf = (p) => (p === 'subject' ? 'stats' : p);
+  // a subject's page sits under the Stats tab (and a friend's stats under Friends)
+  const navOf = (p) => (VW && (p === 'subject' || p === 'stats') ? 'friends' : p === 'subject' ? 'stats' : p);
   function moveIndicator() {
     const btn = $(`.nav-item[data-page="${navOf(currentPage)}"]`);
     $('#nav-indicator').style.transform = `translateY(${btn.offsetTop}px)`;
@@ -514,6 +514,8 @@
     layoutNav(true);
   }
   function go(page) {
+    // leaving a friend's stats for any other page puts the Stats page back to mine
+    if (VW && page !== 'stats' && page !== 'subject') { VW = null; statsHeads(); }
     if (page === currentPage) return;
     const from = $(`#page-${currentPage}`), to = $(`#page-${page}`);
     $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.page === navOf(page)));
@@ -1148,8 +1150,8 @@
   function sessRow(s, i, opts = {}) {
     const d = new Date(s.date), end = new Date(d.getTime() + s.duration * 1000);
     const w = isWithered(s);
-    const tag = s.cancelled ? '<span class="tag cancel">Cancelled</span>' : w ? '<span class="tag dead">Withered</span>' : '';
-    return `<div class="sess-row with-tree${s.cancelled ? ' is-cancelled' : ''}" style="--c:${colorOf(s.subject)};--i:${i}" data-id="${s.id}">
+    const tag = s.live ? '<span class="tag live">Studying now</span>' : s.cancelled ? '<span class="tag cancel">Cancelled</span>' : w ? '<span class="tag dead">Withered</span>' : '';
+    return `<div class="sess-row with-tree${s.cancelled ? ' is-cancelled' : ''}" style="--c:${s.color || colorOf(s.subject)};--i:${i}" data-id="${s.id}">
       <span class="thumb">${staticTree(treeOfSession(s), s.duration, w, 'h' + s.id)}${!w && !s.cancelled && sessionTrees(s) > 1 ? `<b class="tcount">×${sessionTrees(s)}</b>` : ''}</span><span class="nm"><i class="dot"></i>${esc(s.subject)}${tag}${s.coins ? `<span class="tag coins"><span class="coin sm"></span>${s.coins}</span>` : ''}</span>
       <span class="t">${fmtTime(d)} – ${fmtTime(end)}</span>
       <span class="d">${fmtDur(s.duration)}${opts.del !== false ? `<button class="del" title="Delete session">${XICON}</button>` : ''}</span></div>`;
@@ -1619,12 +1621,49 @@
 
   // ---------------- stats ----------------
   const S = { period: 'day', anchor: startOfDay(new Date()), yearSplit: 'month' };
+  // The Stats and subject pages can show a friend's saved sessions instead of mine. While VW is
+  // set, everything on those pages reads from statSessions() and sc(). Friend data comes in
+  // already checked (friends.js), and every name is still escaped when it's shown.
+  let VW = null; // { uid, name, sessions, colors: Map, order: [names], sig }
+  const statSessions = () => (VW ? VW.sessions : D.sessions);
+  const sc = (name) => (VW ? VW.colors.get(name) || '#94a3b8' : colorOf(name));
+  const who = () => (VW ? esc(VW.name) : 'You');
+  function statsHeads() {
+    const f = !!VW, nm = f ? VW.name : '';
+    $('#st-title').textContent = f ? `${nm}'s study stats` : 'Your study stats';
+    $('#st-subtitle').textContent = f ? `${nm}'s saved sessions, plus anything they're studying right now.` : 'See where your time went.';
+    $('#st-forest-title').textContent = f ? 'Their forest' : 'Your forest';
+    $('#st-friend-back').classList.toggle('hidden', !f);
+    $('#st-friend-back span').textContent = f ? `Back to ${nm}` : '';
+    $('#sj-back span').textContent = f ? `Back to ${nm}'s stats` : 'Back to stats';
+    $('#sj-share-label').textContent = f ? 'Share of their study' : 'Share of your study';
+    $('#sj-compare-title').textContent = f ? 'Compared with their other subjects' : 'Compared with your other subjects';
+    $('#sj-ring-sub').textContent = f ? 'of their study' : 'of your study';
+    $('#page-stats').classList.toggle('friend-view', f);
+    $('#page-subject').classList.toggle('friend-view', f);
+    layoutNav();
+  }
+  // open a friend's stats (or one of their subjects) from their profile
+  function openFriendStats(view, subject) {
+    if (!view || !Array.isArray(view.sessions)) return;
+    VW = view;
+    statsHeads();
+    S.period = 'week'; S.anchor = anchorFor('week', new Date());
+    if (subject) { SJ.name = subject; go('subject'); } else go('stats');
+  }
+  // fresh data for the friend being looked at (live study time, a new saved session)
+  function updateFriendStats(view) {
+    if (!VW || !view || view.uid !== VW.uid || view.sig === VW.sig) return;
+    VW = view;
+    if (currentPage === 'stats') renderStats(false);
+    if (currentPage === 'subject') renderSubject(false);
+  }
   function periodRange(period = S.period, a = S.anchor) {
     if (period === 'day') return [a, addDays(a, 1)];
     if (period === 'week') return [a, addDays(a, 7)];
     if (period === 'month') return [a, new Date(a.getFullYear(), a.getMonth() + 1, 1)];
     if (period === 'year') return [a, new Date(a.getFullYear() + 1, 0, 1)];
-    const first = D.sessions.filter(counted).reduce((m, s) => Math.min(m, +new Date(s.date)), Date.now());
+    const first = statSessions().filter(counted).reduce((m, s) => Math.min(m, +new Date(s.date)), Date.now());
     return [new Date(new Date(first).getFullYear(), new Date(first).getMonth(), 1), addDays(startOfDay(new Date()), 1)];
   }
   function anchorFor(period, d) {
@@ -1662,7 +1701,7 @@
   }
   function sessionsIn(a, b) {
     const t0 = +a, t1 = +b;
-    return D.sessions.filter((s) => { const t = +new Date(s.date); return counted(s) && t >= t0 && t < t1; });
+    return statSessions().filter((s) => { const t = +new Date(s.date); return counted(s) && t >= t0 && t < t1; });
   }
   function buckets() {
     const [a, b] = periodRange();
@@ -1753,11 +1792,11 @@
     animateNumber($('#st-avg'), S.period === 'day' ? (list.length ? total / list.length : 0) : total / days, fmtDur);
     const top = $('#st-top');
     top.textContent = ranked.length ? ranked[0][0] : '-';
-    top.style.color = ranked.length ? colorOf(ranked[0][0]) : '';
+    top.style.color = ranked.length ? sc(ranked[0][0]) : '';
     const topCard = top.closest('.stat');
     topCard.classList.toggle('pick', !!ranked.length);
     topCard.dataset.s = ranked.length ? ranked[0][0] : '';
-    topCard.title = ranked.length ? `See your stats for ${ranked[0][0]}` : '';
+    topCard.title = ranked.length ? `See the stats for ${ranked[0][0]}` : '';
     top.classList.remove('swap'); void top.offsetWidth;
     top.style.animation = 'fadeUp .5s var(--ease)';
     setTimeout(() => { top.style.animation = ''; }, 500);
@@ -1774,7 +1813,7 @@
     const since = Date.now() - 30 * 864e5;
     const bins = new Array(24).fill(0);
     let x = 0, y = 0, total = 0;
-    D.sessions.filter((s) => counted(s) && s.duration > 0 && (!sub || s.subject === sub) && new Date(s.date).getTime() >= since).forEach((s) => {
+    statSessions().filter((s) => counted(s) && s.duration > 0 && (!sub || s.subject === sub) && new Date(s.date).getTime() >= since).forEach((s) => {
       const t0 = new Date(s.date);
       let m = t0.getHours() * 60 + t0.getMinutes() + t0.getSeconds() / 60;
       for (let left = s.duration / 60; left > 0; left -= 1, m += 1) {
@@ -1797,7 +1836,7 @@
     const host = $(sub ? '#sj-clock' : '#study-clock');
     if (!host) return;
     const r = studyTimes(sub);
-    if (!r) { host.innerHTML = `<div class="empty">${sub ? `Study ${esc(sub)} a few times this month and your usual time for it shows up here.` : 'Study a few sessions this month and your usual study time shows up here.'}</div>`; return; }
+    if (!r) { host.innerHTML = `<div class="empty">${VW ? `Once ${who()} studies ${sub ? esc(sub) + ' ' : ''}a few times this month, their usual time shows up here.` : sub ? `Study ${esc(sub)} a few times this month and your usual time for it shows up here.` : 'Study a few sessions this month and your usual study time shows up here.'}</div>`; return; }
     const mean = Math.round(r.mean / 5) * 5;
     const max = Math.max(...r.bins);
     const R0 = 46, R1 = 92;
@@ -1816,11 +1855,11 @@
         <circle cx="110" cy="110" r="${R0 - 8}" class="sc-hub"/><text x="110" y="107" class="sc-hub-t">${esc(clockLabel(mean))}</text><text x="110" y="122" class="sc-hub-s">average</text>
       </svg>
       <div class="sc-text">
-        <div class="sc-big">You usually study${sub ? ` <span class="sc-sub">${esc(sub)}</span>` : ''} around <b>${esc(clockLabel(mean))}</b></div>
+        <div class="sc-big">${who()} usually stud${VW ? 'ies' : 'y'}${sub ? ` <span class="sc-sub">${esc(sub)}</span>` : ''} around <b>${esc(clockLabel(mean))}</b></div>
         <p class="muted">That's ${part(mean)}, worked out from ${fmtDur(r.total * 60)} of ${sub ? esc(sub) : 'study'} in the last 30 days.</p>
         <div class="sc-rows">
-          <div><span>Busiest stretch</span><b>${esc(hourLabel(r.peak))} to ${esc(hourLabel(r.peak + 3))}</b><small>${Math.round(r.peakShare * 100)}% of ${sub ? 'this subject\'s' : 'your'} time</small></div>
-          <div><span>How regular</span><b>${r.spread > 0.8 ? 'Very steady' : r.spread > 0.55 ? 'Fairly steady' : r.spread > 0.3 ? 'Mixed' : 'All over the clock'}</b><small>${r.spread > 0.55 ? 'Mostly the same time of day' : 'Your study times vary a lot'}</small></div>
+          <div><span>Busiest stretch</span><b>${esc(hourLabel(r.peak))} to ${esc(hourLabel(r.peak + 3))}</b><small>${Math.round(r.peakShare * 100)}% of ${sub ? 'this subject\'s' : VW ? 'their' : 'your'} time</small></div>
+          <div><span>How regular</span><b>${r.spread > 0.8 ? 'Very steady' : r.spread > 0.55 ? 'Fairly steady' : r.spread > 0.3 ? 'Mixed' : 'All over the clock'}</b><small>${r.spread > 0.55 ? 'Mostly the same time of day' : VW ? 'Their study times vary a lot' : 'Your study times vary a lot'}</small></div>
         </div>
       </div>`;
     if (!fresh) host.classList.add('quiet'); else host.classList.remove('quiet');
@@ -1828,8 +1867,8 @@
   // the period's forest: one tree per session, hover for the details
   function renderStatsPlot(list, a) {
     const host = $('#stats-plot');
-    const sorted = list.slice().sort((x, y) => new Date(x.date) - new Date(y.date));
-    const r = renderPlot(host, sorted, { seed: S.period + (a ? dayKey(a) : 'all'), key: 'st' + S.period, min: 4, count: sessionTrees, onPick: (x, e) => openSubject(x.subject, e) });
+    const sorted = list.filter((x) => !x.live).sort((x, y) => new Date(x.date) - new Date(y.date));
+    const r = renderPlot(host, sorted, { seed: (VW ? VW.uid : '') + S.period + (a ? dayKey(a) : 'all'), key: 'st' + S.period, min: 4, count: sessionTrees, onPick: (x, e) => openSubject(x.subject, e) });
     const grown = sorted.filter((x) => !isWithered(x)).reduce((n, x) => n + sessionTrees(x), 0), dead = sorted.filter(isWithered).length;
     $('#stats-plot-counts').textContent = !sorted.length ? 'No sessions in this period yet'
       : `${grown} tree${grown === 1 ? '' : 's'}${dead ? ` · ${dead} withered` : ''}${r.shown < r.total ? ` · showing the latest ${r.shown}` : ''}`;
@@ -1860,7 +1899,7 @@
         c.addEventListener('click', (e) => openSubject(name, e));
         void c.getBoundingClientRect();
       }
-      c.style.stroke = colorOf(name);
+      c.style.stroke = sc(name);
       c.dataset.tip = `${fmtDur(dur)} · ${Math.round((dur / total) * 100)}%`;
       const o = off;
       requestAnimationFrame(() => {
@@ -1877,7 +1916,7 @@
       setTimeout(() => c.remove(), 1000);
     });
     animateNumber($('#donut-total'), total, fmtDur);
-    $('#legend').innerHTML = ranked.length ? ranked.map(([n, d], i) => `<div class="legend-row" style="--c:${colorOf(n)};--i:${i}" data-s="${esc(n)}" title="See your stats for ${esc(n)}"><span class="dot"></span><span class="nm">${esc(n)}<small>${fmtDur(d)}</small></span><span class="pc">${Math.round((d / total) * 100)}%</span></div>`).join('')
+    $('#legend').innerHTML = ranked.length ? ranked.map(([n, d], i) => `<div class="legend-row" style="--c:${sc(n)};--i:${i}" data-s="${esc(n)}" title="See the stats for ${esc(n)}"><span class="dot"></span><span class="nm">${esc(n)}<small>${fmtDur(d)}</small></span><span class="pc">${Math.round((d / total) * 100)}%</span></div>`).join('')
       : '<div class="empty">No study time in this period.</div>';
     $$('#legend .legend-row').forEach((r) => {
       r.addEventListener('mouseenter', () => hl(r.dataset.s, true));
@@ -1936,7 +1975,8 @@
       col.classList.toggle('current', nowT >= +d.s && nowT < +d.e);
       $('.blabel', col).textContent = d.label;
       const stack = $('.bstack', col);
-      const subs = D.subjects.map((s) => s.name).concat(Object.keys(d.by).filter((n) => !subj(n)));
+      const names = VW ? VW.order : D.subjects.map((s) => s.name);
+      const subs = names.concat(Object.keys(d.by).filter((n) => !names.includes(n)));
       const order = subs.filter((n) => d.by[n]);
       // keep one segment per subject so heights can morph smoothly
       const segs = new Map($$('div', stack).map((x) => [x.dataset.s, x]));
@@ -1946,7 +1986,7 @@
           seg = document.createElement('div'); seg.dataset.s = n; seg.style.height = '0%'; stack.appendChild(seg);
           if (!sub) seg.addEventListener('click', (e) => { e.stopPropagation(); openSubject(n, e); });
         }
-        seg.style.background = colorOf(n);
+        seg.style.background = sc(n);
         segs.delete(n);
         requestAnimationFrame(() => { seg.style.height = (d.tot ? (d.by[n] / d.tot) * 100 : 0) + '%'; });
       });
@@ -1957,7 +1997,7 @@
       }
       requestAnimationFrame(() => { stack.style.height = `${(d.tot / max) * 100}%`; });
       col.onmouseenter = (e) => {
-        const rows = Object.entries(d.by).sort((x, y) => y[1] - x[1]).map(([n, v]) => `<div class="tt-row"><span><i style="--c:${colorOf(n)}"></i>${esc(n)}</span><b>${fmtDur(v)}</b></div>`).join('');
+        const rows = Object.entries(d.by).sort((x, y) => y[1] - x[1]).map(([n, v]) => `<div class="tt-row"><span><i style="--c:${sc(n)}"></i>${esc(n)}</span><b>${fmtDur(v)}</b></div>`).join('');
         showTip(`<div class="tt-title">${d.title}</div>${rows || '<span class="muted">No study</span>'}${d.tot ? `<div class="tt-row" style="margin-top:6px;border-top:1px solid var(--border);padding-top:6px"><span>Total</span><b>${fmtDur(d.tot)}</b></div>` : ''}`, e);
       };
       col.onmousemove = moveTip;
@@ -1975,7 +2015,7 @@
     const host = $('#hbars');
     if (!ranked.length) { host.innerHTML = '<div class="empty">Study something and it will show up here.</div>'; return; }
     const max = ranked[0][1];
-    host.innerHTML = ranked.map(([n, d], i) => `<div class="hbar pick" style="--c:${colorOf(n)};--i:${i}" data-s="${esc(n)}" title="See your stats for ${esc(n)}"><span class="nm"><i></i>${esc(n)}</span><div class="track"><div class="fill"></div></div><span class="v">${fmtDur(d)}</span></div>`).join('');
+    host.innerHTML = ranked.map(([n, d], i) => `<div class="hbar pick" style="--c:${sc(n)};--i:${i}" data-s="${esc(n)}" title="See the stats for ${esc(n)}"><span class="nm"><i></i>${esc(n)}</span><div class="track"><div class="fill"></div></div><span class="v">${fmtDur(d)}</span></div>`).join('');
     requestAnimationFrame(() => requestAnimationFrame(() => {
       $$('.hbar .fill', host).forEach((f, i) => { f.style.width = `${(ranked[i][1] / max) * 100}%`; f.style.transitionDelay = `${i * 50}ms`; });
     }));
@@ -1999,7 +2039,7 @@
   function openSubject(name, e) {
     if (!name) return;
     hideTip();
-    if (e && e.clientX != null) colourWash(e.clientX, e.clientY, colorOf(name));
+    if (e && e.clientX != null) colourWash(e.clientX, e.clientY, sc(name));
     const same = currentPage === 'subject';
     SJ.name = name;
     if (same) {
@@ -2021,14 +2061,14 @@
   function renderSubject(fresh, dir) {
     const name = SJ.name;
     if (!name) return;
-    const color = colorOf(name);
+    const color = sc(name);
     const pg = $('#page-subject');
     pg.style.setProperty('--sc', color);
     renderPeriodHead('sj-', dir);
     $('#sj-name').textContent = name;
     $('#sj-badge').textContent = (name.trim()[0] || '?').toUpperCase();
     const s = subj(name);
-    $('#sj-sub').textContent = !s ? 'Removed subject · its saved sessions still count' : s.archived ? 'Finished subject · its stats are kept' : 'Only this subject, from your saved sessions';
+    $('#sj-sub').textContent = VW ? `From ${VW.name}'s saved sessions` : !s ? 'Removed subject · its saved sessions still count' : s.archived ? 'Finished subject · its stats are kept' : 'Only this subject, from your saved sessions';
 
     const [a, b] = periodRange();
     const every = sessionsIn(a, b);
@@ -2044,20 +2084,20 @@
     renderSubjectHighlights(name);
     renderSubjectShare(name, every, total, allTotal);
     renderBars(fresh, name);
-    const sorted = list.slice().sort((x, y) => new Date(x.date) - new Date(y.date));
+    const sorted = list.filter((x) => !x.live).sort((x, y) => new Date(x.date) - new Date(y.date));
     const host = $('#sj-plot');
-    const r = renderPlot(host, sorted, { seed: 'sj' + name + S.period + dayKey(a), key: 'sj' + S.period, min: 3, count: sessionTrees });
+    const r = renderPlot(host, sorted, { seed: (VW ? VW.uid : '') + 'sj' + name + S.period + dayKey(a), key: 'sj' + S.period, min: 3, count: sessionTrees });
     const grown = sorted.filter((x) => !isWithered(x)).reduce((n, x) => n + sessionTrees(x), 0), dead = sorted.filter(isWithered).length;
     $('#sj-plot-counts').textContent = !sorted.length ? 'No sessions in this period yet'
       : `${grown} tree${grown === 1 ? '' : 's'}${dead ? ` · ${dead} withered` : ''}${r.shown < r.total ? ` · showing the latest ${r.shown}` : ''}`;
     if (!sorted.length) host.insertAdjacentHTML('beforeend', `<div class="plot-empty">Study ${esc(name)} in this period to plant a tree here</div>`);
-    $('#sj-clock-title').textContent = `When you study ${name}`;
+    $('#sj-clock-title').textContent = VW ? `When ${VW.name} studies ${name}` : `When you study ${name}`;
     renderStudyClock(fresh, name);
     renderSubjectRecent(name, list);
   }
   // all-time numbers, not tied to the period
   function renderSubjectHighlights(name) {
-    const all = D.sessions.filter((x) => counted(x) && x.subject === name);
+    const all = statSessions().filter((x) => counted(x) && !x.live && x.subject === name);
     const host = $('#sj-high');
     const tiles = [];
     if (all.length) {
@@ -2074,8 +2114,13 @@
       tiles.push(['All time', fmtDur(total), `${all.length} session${all.length === 1 ? '' : 's'}`]);
       tiles.push(['Longest session', fmtDur(longest.duration), dshort(new Date(longest.date))]);
       tiles.push(['Best day', fmtDur(best[1]), dshort(new Date(by, bm - 1, bd))]);
-      tiles.push(['Streak', `${streak} day${streak === 1 ? '' : 's'}`, streak ? 'in a row' : 'study it today to start one']);
+      tiles.push(['Streak', `${streak} day${streak === 1 ? '' : 's'}`, streak ? 'in a row' : VW ? 'not studied lately' : 'study it today to start one']);
       tiles.push(['Trees grown', String(trees), `since ${dshort(new Date(first))}`]);
+    }
+    if (VW) {
+      host.innerHTML = tiles.length ? tiles.map(([l, v, sm], i) => `<div class="sj-tile" style="--i:${i}"><span>${l}</span><b>${esc(v)}</b><small>${esc(sm)}</small></div>`).join('')
+        : '<div class="sj-tile wide"><span>All time</span><b>Nothing saved yet</b><small>Their finished sessions of this subject show up here</small></div>';
+      return;
     }
     // this semester's grade, if there is one
     const rows = semRows(name, curSem());
@@ -2091,7 +2136,7 @@
     const C = 2 * Math.PI * 84;
     const ring = $('#sj-ring');
     const frac = allTotal ? total / allTotal : 0;
-    ring.style.stroke = colorOf(name);
+    ring.style.stroke = sc(name);
     ring.style.strokeDasharray = `0 ${C}`;
     void ring.getBoundingClientRect();
     requestAnimationFrame(() => { ring.style.strokeDasharray = `${frac * C} ${C}`; });
@@ -2115,7 +2160,7 @@
       const pct = prev ? Math.round((Math.abs(diff) / prev) * 100) : null;
       html += `<div class="sj-vs ${cls}"><i>${diff > 0 ? '▲' : diff < 0 ? '▼' : '='}</i><span>${diff ? `${fmtDur(Math.abs(diff))} ${diff > 0 ? 'more' : 'less'} than ${label}${pct != null ? ` (${pct}%)` : ''}` : `Same as ${label}`}</span></div>`;
     }
-    html += ranked.length ? `<div class="sj-mini">${ranked.map(([n, d], i) => `<div class="sj-mini-row${n === name ? ' me' : ''}" style="--c:${colorOf(n)};--i:${i}" data-s="${esc(n)}"${n === name ? '' : ` title="See your stats for ${esc(n)}"`}><span class="dot"></span><span class="nm">${esc(n)}</span><span class="track"><span class="fill" style="--w:${((d / ranked[0][1]) * 100).toFixed(1)}%"></span></span><span class="v">${fmtDur(d)}</span></div>`).join('')}</div>`
+    html += ranked.length ? `<div class="sj-mini">${ranked.map(([n, d], i) => `<div class="sj-mini-row${n === name ? ' me' : ''}" style="--c:${sc(n)};--i:${i}" data-s="${esc(n)}"${n === name ? '' : ` title="See the stats for ${esc(n)}"`}><span class="dot"></span><span class="nm">${esc(n)}</span><span class="track"><span class="fill" style="--w:${((d / ranked[0][1]) * 100).toFixed(1)}%"></span></span><span class="v">${fmtDur(d)}</span></div>`).join('')}</div>`
       : '<div class="empty">No study time in this period.</div>';
     $('#sj-compare').innerHTML = html;
     $$('#sj-compare .sj-mini-row:not(.me)').forEach((r) => r.addEventListener('click', (e) => openSubject(r.dataset.s, e)));
@@ -2134,7 +2179,7 @@
     }).join('');
     paintTrees(host);
     const more = $('#sj-recent-more');
-    more.classList.remove('hidden');
+    more.classList.toggle('hidden', !!VW);
     more.textContent = rows.length > SHOW ? `See all ${rows.length} in History` : 'Open in History';
   }
 
@@ -3568,7 +3613,22 @@
 
   // ---------------- wiring ----------------
   function wire() {
-    $$('.nav-item').forEach((b) => b.addEventListener('click', () => go(b.dataset.page)));
+    $$('.nav-item').forEach((b) => b.addEventListener('click', () => {
+      // the Stats tab while looking at a friend's stats goes back to my own
+      if (VW && b.dataset.page === 'stats') {
+        VW = null; statsHeads();
+        if (currentPage === 'stats') {
+          $$('.nav-item').forEach((x) => x.classList.toggle('active', x.dataset.page === 'stats'));
+          layoutNav(true);
+          const pg = $('#page-stats');
+          $$('.stagger.anim-done', pg).forEach((el) => el.classList.remove('anim-done'));
+          pg.classList.remove('enter'); void pg.offsetWidth; pg.classList.add('enter');
+          pg.scrollTop = 0;
+          return renderStats(true);
+        }
+      }
+      go(b.dataset.page);
+    }));
     $('#nav-more').addEventListener('click', () => toggleNav());
     $('#btn-start').addEventListener('click', start);
     $('#btn-stop').addEventListener('click', stop);
@@ -3592,6 +3652,7 @@
       if (e.target.matches('input, select, textarea') || $('.modal-back') || !$('#onboarding').classList.contains('hidden') || !$('#case-overlay').classList.contains('hidden')) return;
       if (e.code === 'Space' && currentPage === 'timer') { e.preventDefault(); start(); }
       if ((e.key === 'Escape' || e.key === 'Backspace') && currentPage === 'subject') { e.preventDefault(); go('stats'); }
+      else if ((e.key === 'Escape' || e.key === 'Backspace') && currentPage === 'stats' && VW) { e.preventDefault(); go('friends'); }
       if (e.ctrlKey && e.key >= '1' && e.key <= '9') go(['timer', 'stats', 'grades', 'garden', 'trees', 'friends', 'badges', 'history', 'settings'][+e.key - 1]);
     });
 
@@ -3611,7 +3672,8 @@
     $('#stat-cards').addEventListener('click', (e) => { const c = e.target.closest('.stat.pick'); if (c && c.dataset.s) openSubject(c.dataset.s, e); });
     $('#sj-back').addEventListener('click', () => go('stats'));
     // the mouse's back button also leaves a subject's page
-    addEventListener('mouseup', (e) => { if (e.button === 3 && currentPage === 'subject') go('stats'); });
+    addEventListener('mouseup', (e) => { if (e.button === 3 && currentPage === 'subject') go('stats'); else if (e.button === 3 && currentPage === 'stats' && VW) go('friends'); });
+    $('#st-friend-back').addEventListener('click', () => go('friends'));
     $('#sj-recent-more').addEventListener('click', () => {
       renderHistory();
       const sel = $('#hist-filter');
@@ -3785,7 +3847,7 @@
       D: () => D, readOnly: () => readOnly, currentPage: () => currentPage,
       save, toast, modal, burst, esc, fmtDur, fmtTime, dayKey, startOfDay, startOfWeek, addDays,
       counted, isWithered, sessionTrees, totalTrees, witheredCount, colorOf, streakDays, elapsedSec, owns,
-      staticTree, paintTrees, gardenShare, friendGarden, butterflies, makeStars, flyCoins, flyGift, renderCoins, showTip, moveTip, hideTip, positionSegs,
+      staticTree, paintTrees, gardenShare, friendGarden, openFriendStats, updateFriendStats, friendStatsUid: () => (VW ? VW.uid : null), butterflies, makeStars, flyCoins, flyGift, renderCoins, showTip, moveTip, hideTip, positionSegs,
       checkAchievements, updateNavDots, gradeSummary, rewardChip, rewardText, caseName, CASES, BADGES, TIERS, badgeSvg,
       caseColor: (id) => (CASES.find((c) => c.id === id) || { color: '#fbbf24' }).color,
       validTree: (id) => (window.Tree.SPECIES.some((x) => x.id === id) ? id : 'oak'),
@@ -3847,6 +3909,7 @@
     wire();
     setupUpdates();
     if (window.Friends) window.Friends.init(friendsCtx());
+    if (window.Admin) { window.Admin.init(friendsCtx()); $('#set-admin').addEventListener('click', () => window.Admin.open()); }
     // restore a session that was running when the app closed (it resumes paused)
     if (D.active) {
       D.active.segStart = null;
