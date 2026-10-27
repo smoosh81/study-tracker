@@ -104,7 +104,7 @@
     <!-- STATS -->
     <section class="page" id="page-stats">
       <header class="page-head stagger" style="--i:0">
-        <div><h1>Your study stats</h1><p class="sub">See where your time went.</p></div>
+        <div><button class="btn small ghost st-friend-back hidden" id="st-friend-back"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg><span></span></button><h1 id="st-title">Your study stats</h1><p class="sub" id="st-subtitle">See where your time went.</p></div>
         <div class="seg" id="period-seg">
           <div class="seg-pill"></div>
           <button data-p="day" class="active">Day</button><button data-p="week">Week</button><button data-p="month">Month</button><button data-p="year">Year</button><button data-p="all">All time</button>
@@ -123,7 +123,7 @@
         <div class="stat"><span class="s-label">Top subject</span><span class="s-val small" id="st-top">-</span></div>
       </div>
       <div class="card plot-card stagger" style="--i:3">
-        <div class="card-head"><h3>Your forest</h3><span class="plot-counts" id="stats-plot-counts"></span></div>
+        <div class="card-head"><h3 id="st-forest-title">Your forest</h3><span class="plot-counts" id="stats-plot-counts"></span></div>
         <div class="plot-host stats-plot" id="stats-plot"></div>
       </div>
       <div class="stats-grid">
@@ -159,7 +159,7 @@
     <section class="page" id="page-subject">
       <div class="sj-hero stagger" style="--i:0">
         <div class="sj-glow"></div>
-        <button class="btn small ghost sj-back" id="sj-back" title="Back to stats (Esc)"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>Back to stats</button>
+        <button class="btn small ghost sj-back" id="sj-back" title="Back to stats (Esc)"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg><span>Back to stats</span></button>
         <div class="sj-id">
           <span class="sj-badge" id="sj-badge"></span>
           <div><h1 id="sj-name"></h1><p class="sub" id="sj-sub"></p></div>
@@ -182,15 +182,15 @@
         <div class="stat"><span class="s-label">Time studied</span><span class="s-val" id="sj-total">0h</span></div>
         <div class="stat"><span class="s-label">Sessions</span><span class="s-val" id="sj-sessions">0</span></div>
         <div class="stat"><span class="s-label" id="sj-avg-label">Daily average</span><span class="s-val" id="sj-avg">0h</span></div>
-        <div class="stat"><span class="s-label">Share of your study</span><span class="s-val" id="sj-share">0%</span></div>
+        <div class="stat"><span class="s-label" id="sj-share-label">Share of your study</span><span class="s-val" id="sj-share">0%</span></div>
       </div>
       <div class="stats-grid">
         <div class="card stagger" style="--i:3">
-          <div class="card-head"><h3>Compared with your other subjects</h3></div>
+          <div class="card-head"><h3 id="sj-compare-title">Compared with your other subjects</h3></div>
           <div class="sj-share-wrap">
             <div class="donut-box sj-ring-box">
               <svg viewBox="0 0 220 220" class="donut"><circle cx="110" cy="110" r="84" class="donut-track"/><circle cx="110" cy="110" r="84" class="sj-ring" id="sj-ring"/></svg>
-              <div class="donut-center"><span id="sj-ring-pc">0%</span><small>of your study</small></div>
+              <div class="donut-center"><span id="sj-ring-pc">0%</span><small id="sj-ring-sub">of your study</small></div>
             </div>
             <div class="sj-compare" id="sj-compare"></div>
           </div>
@@ -356,6 +356,7 @@
           <button class="btn ghost" id="set-rerun">Redo the setup</button>
           <button class="btn danger" id="set-clear">Delete all data</button>
         </div>
+        <p class="tiny-note adm-link-row"><button class="link-btn" id="set-admin" title="Ctrl+Shift+A">Admin panel</button></p>
       </div>
       <div class="card stagger" style="--i:5">
         <div class="card-head"><h3>Updates</h3></div>
@@ -433,6 +434,7 @@
 <script src="tree.js"></script>
 <script src="welcome.js"></script>
 <script src="friends.js"></script>
+<script src="admin.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -7,6 +7,8 @@
 //   profiles/{uid}               { name, code, friends[], data, grades?, updated }   readable by friends only
 //   inbox/{uid}/items/{id}       friend requests and gifts sent to uid
 //   streaks/{uidA_uidB}          { members[], by, status, since, updated }
+//   boards/{week}/people/{uid}   { name, pic, sec, at }         global leaderboard, public
+//   bans/{uid}                   { name, code, reason, at }     written by admins only
 const { app, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -161,27 +163,75 @@ async function getDoc(p) {
     throw e;
   }
 }
-async function commit(writes) {
-  return authed('POST', `${urls().db}:commit`, { writes });
+// The server's clock, learned from each write, so time limits don't depend on this PC's clock.
+let clockSkew = 0;
+const serverNow = () => Date.now() + clockSkew;
+function learnClock(r) {
+  const t = r && r.commitTime ? Date.parse(r.commitTime) : NaN;
+  if (Number.isFinite(t)) clockSkew = t - Date.now();
+  return t;
 }
+async function commit(writes) {
+  const r = await authed('POST', `${urls().db}:commit`, { writes });
+  learnClock(r);
+  return r;
+}
+// several documents in one request (each still counts as one read)
+async function batchGet(paths, auth = authed, fields) {
+  const out = {};
+  if (!paths.length) return out;
+  const body = { documents: paths.map(docName) };
+  if (fields) body.mask = { fieldPaths: fields };
+  const r = await auth('POST', `${urls().db}:batchGet`, body);
+  // keyed by the path asked for, e.g. out['profiles/abc']
+  const rel = (name) => String(name).split('/documents/').slice(1).join('/documents/');
+  (Array.isArray(r) ? r : []).forEach((x) => {
+    if (x.found) out[rel(x.found.name)] = fromFields(x.found.fields);
+    else if (x.missing) out[rel(x.missing)] = null;
+  });
+  return out;
+}
+// the top of a collection, biggest `field` first
+async function topOf(parent, collection, field, limit, auth = authed) {
+  const r = await auth('POST', `${urls().db}/${parent}:runQuery`, {
+    structuredQuery: { from: [{ collectionId: collection }], orderBy: [{ field: { fieldPath: field }, direction: 'DESCENDING' }], limit },
+  });
+  return (Array.isArray(r) ? r : []).filter((x) => x && x.document).map((x) => Object.assign({ id: x.document.name.split('/').pop() }, fromFields(x.document.fields)));
+}
+const serverTime = (field) => ({ fieldPath: field, setToServerValue: 'REQUEST_TIME' });
 const updateWrite = (p, obj, opts = {}) => {
   const w = { update: { name: docName(p), fields: toFields(obj) } };
   if (opts.merge) w.updateMask = { fieldPaths: Object.keys(obj).map((k) => (/^[A-Za-z_][A-Za-z_0-9]*$/.test(k) ? k : '`' + k + '`')) };
   if (opts.exists !== undefined) w.currentDocument = { exists: opts.exists };
   return w;
 };
-async function listDocs(p) {
+async function listDocs(p, auth = authed) {
   const out = [];
   let pageToken = '';
   do {
-    const r = await authed('GET', `${urls().db}/${p}?pageSize=100${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''}`);
+    const r = await auth('GET', `${urls().db}/${p}?pageSize=100${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''}`);
     (r && r.documents || []).forEach((d) => out.push(Object.assign({ id: d.name.split('/').pop() }, fromFields(d.fields))));
     pageToken = r && r.nextPageToken;
   } while (pageToken);
   return out;
 }
 
+// ---------- admin sign-in (memory only) ----------
+let admin = null; // { uid, email, token, refresh, exp }
+const adminLock = { fails: 0, until: 0 };
+async function adminAuthed(method, url, body) {
+  if (!admin) throw new SocialError('Sign in to the admin panel again', 401);
+  if (Date.now() > admin.exp - 60000) {
+    const c = config(), u = urls();
+    const r = await http('POST', `${u.token}?key=${c.apiKey}`, `grant_type=refresh_token&refresh_token=${encodeURIComponent(admin.refresh)}`, { 'Content-Type': 'application/x-www-form-urlencoded' });
+    admin.token = r.id_token; admin.refresh = r.refresh_token || admin.refresh; admin.exp = Date.now() + (+r.expires_in || 3600) * 1000;
+  }
+  return http(method, url, body, { Authorization: `Bearer ${admin.token}` });
+}
+
 // ---------- operations ----------
+let oldRules = false; // the server rules are older than 1.18 (no live/wk fields yet)
+let boardLast = null; // my last leaderboard entry: { week, sec, name, pic, at } (server time)
 let myProfile = null; // last copy of profiles/{me}
 function randomCode() {
   const b = crypto.randomBytes(4);
@@ -232,10 +282,12 @@ const ops = {
     return { configured: configured(), uid: account.uid || null, code: account.code || null };
   },
   // sign in (creating the account the first time), make sure there's a code, and publish this profile
-  async publish({ name, data, grades }) {
+  // `live` (what I'm studying right now) and `wk` (this week's and today's hours) are small copies
+  // kept outside `data`, so friends can check them every 30 seconds without downloading everything
+  async publish({ name, data, grades, live, wk }) {
     const p = await ensureProfile(name);
     const uid = account.uid;
-    const fields = { name: name || '', data: data || '', updated: new Date().toISOString() };
+    const fields = { name: name || '', data: data || '', live: live || '', wk: wk || '', updated: new Date().toISOString() };
     const writes = [];
     // grades are only on the server while sharing is switched on
     if (grades) fields.grades = grades;
@@ -243,7 +295,13 @@ const ops = {
     if (!grades) w.updateMask.fieldPaths.push('grades'); // in the mask but not in the fields = deleted
     writes.push(w);
     if (p.name !== (name || '')) writes.push(updateWrite(`codes/${p.code}`, { uid, name: name || '' }, { merge: true }));
-    await commit(writes);
+    if (oldRules) { delete fields.live; delete fields.wk; w.update.fields = toFields(fields); w.updateMask.fieldPaths = w.updateMask.fieldPaths.filter((f) => f !== 'live' && f !== 'wk'); }
+    try { await commit(writes); } catch (e) {
+      // server rules from before 1.18 don't know the small live/week fields: send without them
+      if (e.status !== 403 || oldRules) throw e;
+      oldRules = true;
+      return ops.publish({ name, data, grades, live, wk });
+    }
     Object.assign(myProfile, fields);
     if (!grades) delete myProfile.grades;
     return { uid, code: p.code, friends: p.friends || [] };
@@ -265,9 +323,10 @@ const ops = {
     const inbox = await listDocs(`inbox/${uid}/items`);
     const friends = await Promise.all(friendIds.map(async (fid) => {
       const pair = [uid, fid].sort().join('_');
-      let prof = null, mutual = false;
+      let prof = null, mutual = false, gone = false;
       try {
         prof = await getDoc(`profiles/${fid}`);
+        gone = prof === null; // the account was deleted or banned
         mutual = !!(prof && (prof.friends || []).includes(uid));
       } catch (e) {
         if (e.offline) throw e;
@@ -277,7 +336,7 @@ const ops = {
       if (mutual) {
         try { streak = await getDoc(`streaks/${pair}`); } catch (e) { if (e.offline) throw e; }
       }
-      return { uid: fid, pair, mutual, name: prof ? prof.name : null, code: prof ? prof.code : null, data: prof ? prof.data : null, grades: prof ? prof.grades || null : null, updated: prof ? prof.updated : null, streak };
+      return { uid: fid, pair, mutual, gone, name: prof ? prof.name : null, code: prof ? prof.code : null, data: prof ? prof.data : null, grades: prof ? prof.grades || null : null, updated: prof ? prof.updated : null, live: prof ? prof.live : null, wk: prof ? prof.wk : null, streak };
     }));
     return { uid, code: p.code, friends, inbox };
   },
@@ -372,11 +431,144 @@ const ops = {
     await commit([{ delete: docName(`streaks/${pair}`) }]);
     return true;
   },
+  // Friends' profiles only, in one request: keeps online dots, live study time and the
+  // leaderboard fresh while the Friends tab is open. Only for friends who added me back
+  // (anyone else's profile is private, and one refusal fails the whole request).
+  async pulse({ uids }) {
+    await idToken();
+    const me = account.uid;
+    const got = await batchGet(uids.map((u) => `profiles/${u}`), authed, ['name', 'friends', 'updated', 'live', 'wk']);
+    return uids.map((u) => {
+      const p = got[`profiles/${u}`];
+      return { uid: u, gone: p === null, mutual: !!(p && (p.friends || []).includes(me)), name: p ? p.name : null, updated: p ? p.updated : null, live: p ? p.live : null, wk: p ? p.wk : null };
+    });
+  },
+  // ---- global leaderboard ----
+  // My entry for this week. The rules only let hours grow as fast as real time passes, so this
+  // sends no more than that (anything left over goes up with the next update).
+  async board({ week, sec, name, pic, hide }) {
+    loadAccount();
+    if (!account.uid || !account.code) return false;
+    await idToken();
+    const p = `boards/${week}/people/${account.uid}`;
+    if (hide) {
+      if (boardLast && boardLast.week === week && boardLast.hidden) return true;
+      await commit([{ delete: docName(p) }]);
+      boardLast = { week, hidden: true };
+      return true;
+    }
+    if (!boardLast || boardLast.week !== week || boardLast.hidden) {
+      const cur = await getDoc(p);
+      boardLast = cur && Number.isFinite(Date.parse(cur.at)) ? { week, sec: Math.floor(+cur.sec || 0), name: cur.name, pic: cur.pic, at: Date.parse(cur.at) } : { week, sec: null };
+    }
+    const now = serverNow();
+    const cap = boardLast.sec == null
+      ? Math.floor((now - Date.parse(`${week}T00:00:00Z`)) / 1000) + 12 * 3600
+      : boardLast.sec + Math.floor((now - boardLast.at) / 1000) + 300;
+    const send = Math.max(0, Math.min(sec, cap, 604800));
+    if (boardLast.sec === send && boardLast.name === name && boardLast.pic === pic) return { sent: send };
+    const w = updateWrite(p, { name, pic, sec: send });
+    w.updateTransforms = [serverTime('at')];
+    let t;
+    try { t = learnClock(await authed('POST', `${urls().db}:commit`, { writes: [w] })); } catch (e) {
+      boardLast = null; // read it again next time
+      throw e;
+    }
+    boardLast = { week, sec: send, name, pic, at: Number.isFinite(t) ? t : serverNow() };
+    return { sent: send };
+  },
+  async boardTop({ week }) {
+    await idToken();
+    const rows = await topOf(`boards/${week}`, 'people', 'sec', 50);
+    return rows.map((r) => ({ uid: r.id, name: r.name, pic: r.pic, sec: r.sec }));
+  },
+  // is this account banned? (only asked after the server turns a write down)
+  async banned() {
+    loadAccount();
+    if (!account.uid) return false;
+    await idToken();
+    try { return !!(await getDoc(`bans/${account.uid}`)); } catch (e) { if (e.offline) throw e; return false; }
+  },
+
+  // ---- admin ----
+  // Admins sign in with an email and password made in the Firebase console. The password is
+  // checked by Google, never stored here, and the sign-in only lives in memory until the panel
+  // closes. What an admin may do is decided by the server rules (isAdmin), not by this app.
+  async adminSignIn({ email, password }) {
+    if (Date.now() < adminLock.until) throw new SocialError(`Too many tries. Wait ${Math.ceil((adminLock.until - Date.now()) / 1000)} seconds`, 429);
+    const c = config(), u = urls();
+    let r;
+    try {
+      r = await http('POST', `${u.auth}/accounts:signInWithPassword?key=${c.apiKey}`, { email, password, returnSecureToken: true });
+    } catch (e) {
+      if (e.offline) throw e;
+      adminLock.fails++;
+      if (adminLock.fails >= 5) { adminLock.until = Date.now() + 60000 * Math.min(10, adminLock.fails - 4); }
+      const m = String(e.message || '');
+      throw new SocialError(/OPERATION_NOT_ALLOWED|PASSWORD_LOGIN_DISABLED/.test(m) ? 'Email sign-in is switched off in the Firebase console'
+        : /TOO_MANY/.test(m) ? 'Too many tries. Try again later' : 'Wrong email or password', 401);
+    }
+    admin = { uid: r.localId, email: r.email, token: r.idToken, refresh: r.refreshToken, exp: Date.now() + (+r.expiresIn || 3600) * 1000 };
+    // the rules decide: only an admin may list bans
+    try { await adminAuthed('GET', `${u.db}/bans?pageSize=1`); } catch (e) {
+      const uid = admin.uid;
+      admin = null;
+      if (e.status === 403) throw new SocialError(`Signed in, but this account isn't an admin yet. Put its UID (${uid}) in the Firestore rules`, 403);
+      throw e;
+    }
+    adminLock.fails = 0;
+    return { email: admin.email, uid: admin.uid };
+  },
+  async adminSignOut() { admin = null; return true; },
+  async adminBoard({ week }) {
+    const rows = await topOf(`boards/${week}`, 'people', 'sec', 100, adminAuthed);
+    return rows.map((r) => ({ uid: r.id, name: r.name, pic: r.pic, sec: r.sec }));
+  },
+  async adminFind({ code, uid }) {
+    if (code) {
+      const c = await batchGet([`codes/${code}`], adminAuthed);
+      if (!c[`codes/${code}`]) return null;
+      uid = c[`codes/${code}`].uid;
+      if (typeof uid !== 'string' || !SAFE.test(uid)) return null;
+    }
+    const got = await batchGet([`profiles/${uid}`, `bans/${uid}`], adminAuthed);
+    const p = got[`profiles/${uid}`] || null, b = got[`bans/${uid}`] || null;
+    return { uid, name: p ? p.name : (b ? b.name : null), code: p ? p.code : (b ? b.code : code || null), updated: p ? p.updated : null, friends: p ? (p.friends || []).length : 0, banned: !!b, reason: b ? b.reason : '' };
+  },
+  async adminBans() {
+    const list = await listDocs('bans', adminAuthed);
+    return list.map((b) => ({ uid: b.id, name: b.name, code: b.code, reason: b.reason, at: b.at }));
+  },
+  // a ban takes the person off the leaderboard, removes their profile and friend code, and the
+  // rules stop the account from writing anything again
+  async adminBan({ uid, reason, week }) {
+    const got = await batchGet([`profiles/${uid}`], adminAuthed);
+    const p = got[`profiles/${uid}`] || {};
+    const code = typeof p.code === 'string' && /^[A-Z]{4}$/.test(p.code) ? p.code : '';
+    const w = updateWrite(`bans/${uid}`, { name: String(p.name || '').slice(0, 40), code, reason: reason || '' });
+    w.updateTransforms = [serverTime('at')];
+    const writes = [w, { delete: docName(`profiles/${uid}`) }, { delete: docName(`boards/${week}/people/${uid}`) }];
+    if (code) {
+      const c = await batchGet([`codes/${code}`], adminAuthed);
+      if (c[`codes/${code}`] && c[`codes/${code}`].uid === uid) writes.push({ delete: docName(`codes/${code}`) });
+    }
+    await adminAuthed('POST', `${urls().db}:commit`, { writes });
+    return true;
+  },
+  async adminUnban({ uid }) {
+    await adminAuthed('POST', `${urls().db}:commit`, { writes: [{ delete: docName(`bans/${uid}`) }] });
+    return true;
+  },
+  async adminRemoveBoard({ uid, week }) {
+    await adminAuthed('POST', `${urls().db}:commit`, { writes: [{ delete: docName(`boards/${week}/people/${uid}`) }] });
+    return true;
+  },
 };
 
 // Everything from the app window is checked before it goes into a server path.
 const SAFE = /^[A-Za-z0-9_-]{1,128}$/;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
+const TREE = /^[a-z]{2,20}$/;
 function checkArgs(op, a) {
   const id = (v) => { if (typeof v !== 'string' || !SAFE.test(v)) throw new SocialError('bad request', 400); return v; };
   const day = (v) => { if (typeof v !== 'string' || !DAY.test(v)) throw new SocialError('bad request', 400); return v; };
@@ -393,9 +585,35 @@ function checkArgs(op, a) {
     case 'startStreak': id(a.friend); day(a.today); break;
     case 'acceptStreak': case 'restartStreak': id(a.pair); day(a.today); break;
     case 'endStreak': id(a.pair); break;
+    case 'pulse':
+      if (!Array.isArray(a.uids)) throw new SocialError('bad request', 400);
+      a.uids = Array.from(new Set(a.uids)).slice(0, 100).map(id);
+      break;
+    case 'board':
+      day(a.week);
+      a.sec = Math.floor(Number(a.sec));
+      if (!(a.sec >= 0)) a.sec = 0;
+      a.name = typeof a.name === 'string' ? a.name.slice(0, 24) : '';
+      if (typeof a.pic !== 'string' || !TREE.test(a.pic)) a.pic = '';
+      a.hide = a.hide === true;
+      break;
+    case 'boardTop': case 'adminBoard': day(a.week); break;
+    case 'adminSignIn':
+      if (typeof a.email !== 'string' || typeof a.password !== 'string' || !a.email || !a.password || a.email.length > 200 || a.password.length > 200) throw new SocialError('Type your email and password', 400);
+      a.email = a.email.trim();
+      break;
+    case 'adminFind':
+      if (a.code != null && a.code !== '') { a.code = String(a.code).toUpperCase(); if (!/^[A-Z]{4}$/.test(a.code)) throw new SocialError('A friend code is 4 letters', 400); delete a.uid; }
+      else { id(a.uid); a.code = ''; }
+      break;
+    case 'adminBan': id(a.uid); day(a.week); a.reason = typeof a.reason === 'string' ? a.reason.slice(0, 200) : ''; break;
+    case 'adminUnban': id(a.uid); break;
+    case 'adminRemoveBoard': id(a.uid); day(a.week); break;
     case 'publish':
       if (typeof a.data !== 'string' || a.data.length >= 400000) a.data = '';
       if (a.grades != null && (typeof a.grades !== 'string' || a.grades.length >= 60000)) a.grades = '';
+      if (typeof a.live !== 'string' || a.live.length >= 1000) a.live = '';
+      if (typeof a.wk !== 'string' || a.wk.length >= 500) a.wk = '';
       break;
     default: break;
   }

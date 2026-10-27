@@ -50,7 +50,9 @@
   const F = {
     configured: null, loading: false, offline: false, error: '', loadedAt: 0,
     me: null, code: null, friends: [], inbox: [], view: null, tab: 'stats', busy: false,
+    banned: false, pulsedAt: 0, boardTab: 'friends', board: { rows: null, at: 0, loading: false, err: '' },
   };
+  const HIST_MAX = 1500;            // saved sessions shared for a friend's full stats page
   const STREAK_MIN = 15 * 60;       // each of you studies 15 minutes for the day to count
   const MAX_REQUESTS = 20;          // friend requests shown at once (newest first)
   const MAX_STREAKS = 3;            // streak rewards from up to 3 friends at a time
@@ -82,10 +84,17 @@
 
   const hash = (t) => { let h = 2166136261; for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; };
   const AV_COLORS = ['#f472b6', '#38bdf8', '#a78bfa', '#fb923c', '#4ade80', '#facc15', '#2dd4bf', '#f87171', '#818cf8', '#34d399'];
-  function avatar(name, uid, size = '') {
+  // a profile picture: a tree they've unlocked, or the first letter of their name
+  let avN = 0;
+  const isTreeId = (p) => typeof p === 'string' && window.Tree.SPECIES.some((sp) => sp.id === p);
+  function avatar(name, uid, size = '', pic = null) {
     const n = shownName(name);
-    return `<span class="fr-av ${size}" style="--av:${AV_COLORS[hash(uid || n) % AV_COLORS.length]}">${C.esc(n.slice(0, 1).toUpperCase())}</span>`;
+    const col = AV_COLORS[hash(uid || n) % AV_COLORS.length];
+    if (pic && isTreeId(pic)) return `<span class="fr-av pic ${size}" style="--av:${col}">${C.staticTree(pic, 3 * 3600, false, 'av' + (avN++))}</span>`;
+    return `<span class="fr-av ${size}" style="--av:${col}">${C.esc(n.slice(0, 1).toUpperCase())}</span>`;
   }
+  const myPic = () => (isTreeId(S().pic) && C.owns(S().pic) ? S().pic : null);
+  const picOf = (f) => (f && f.info ? f.info.pic : null);
   const parse = (s) => { try { return typeof s === 'string' && s ? JSON.parse(s) : null; } catch (e) { return null; } };
 
   // ---------------- friend data is checked before use ----------------
@@ -125,9 +134,40 @@
     if (isObj(raw.decor)) Object.keys(raw.decor).filter((k) => SAFE_ID.test(k)).slice(0, 100).forEach((k) => { out.decor[k] = int(raw.decor[k], 999); });
     // the garden is checked again, piece by piece, when it's drawn (friendGarden in app.js)
     out.garden = isObj(raw.garden) ? raw.garden : null;
-    const lv = raw.live;
-    out.live = isObj(lv) ? { s: txt(lv.s, 40), c: color(lv.c), e: int(lv.e, 86400 * 2), t: isoDate(lv.t), p: lv.p ? 1 : 0 } : null;
+    out.live = cleanLive(raw.live);
+    // a picture only counts if it's a tree they've unlocked
+    out.pic = typeof raw.pic === 'string' && own(out.owned, raw.pic) && out.owned[raw.pic] > 0 ? raw.pic : null;
+    out.hist = cleanHist(raw.hist);
     return out;
+  }
+  function cleanLive(lv) {
+    return isObj(lv) ? { s: txt(lv.s, 40), c: color(lv.c), e: int(lv.e, 86400 * 2), t: isoDate(lv.t), p: lv.p ? 1 : 0, tr: C.validTree(lv.tr) } : null;
+  }
+  // this week's and today's saved hours: { k: week's Monday, s: seconds, d: day, t: seconds }
+  function cleanWk(w) {
+    if (!isObj(w) || !DAY_RE.test(w.k) || !DAY_RE.test(w.d)) return null;
+    return { k: w.k, s: int(w.s, 604800), d: w.d, t: int(w.t, 86400) };
+  }
+  // a separate live field wins over the copy inside `data` ('' = not studying); older versions
+  // of the app don't send one, so theirs comes from `data`
+  function mergeLive(f, raw) {
+    if (f.info && typeof raw === 'string') f.info.live = raw ? cleanLive(parse(raw)) : null;
+  }
+  // their saved sessions for the full stats page: subjects [[name, colour]] and
+  // sessions [[start (unix seconds), seconds, subject number, tree, withered]]
+  function cleanHist(h) {
+    if (!isObj(h) || !Array.isArray(h.s) || !Array.isArray(h.x)) return null;
+    const subs = h.s.slice(0, 100).map((x) => (Array.isArray(x) ? { n: txt(x[0], 40) || 'Study', c: color(x[1]) } : { n: 'Study', c: '#94a3b8' }));
+    const lo = Date.UTC(2015, 0, 1), hi = Date.now() + 2 * 864e5;
+    const list = [];
+    h.x.slice(-HIST_MAX).forEach((r) => {
+      if (!Array.isArray(r)) return;
+      const t = Math.floor(Number(r[0])) * 1000, k = Math.floor(Number(r[2]));
+      if (!Number.isFinite(t) || t < lo || t > hi || !Number.isInteger(k) || k < 0 || k >= subs.length) return;
+      list.push({ t, s: int(r[1], 86400), k, tr: C.validTree(r[3]), w: r[4] ? 1 : 0 });
+    });
+    list.sort((a, b) => a.t - b.t);
+    return { subs, list };
   }
   function cleanGrades(raw) {
     if (!Array.isArray(raw)) return null;
@@ -147,10 +187,15 @@
   }
   function cleanFriend(f) {
     if (!isObj(f) || typeof f.uid !== 'string' || !SAFE_ID.test(f.uid)) return null;
+    const out = cleanFriendBase(f);
+    mergeLive(out, f.live);
+    return out;
+  }
+  function cleanFriendBase(f) {
     return {
       uid: f.uid, pair: txt(f.pair, 260), mutual: f.mutual === true, name: txt(f.name, 40) || null,
-      code: typeof f.code === 'string' && /^[A-Z]{4}$/.test(f.code) ? f.code : null, updated: isoDate(f.updated),
-      streak: cleanStreak(f.streak), info: cleanInfo(parse(f.data)), gradeInfo: cleanGrades(parse(f.grades)),
+      code: typeof f.code === 'string' && /^[A-Z]{4}$/.test(f.code) ? f.code : null, updated: isoDate(f.updated), gone: f.gone === true,
+      streak: cleanStreak(f.streak), info: cleanInfo(parse(f.data)), gradeInfo: cleanGrades(parse(f.grades)), wk: cleanWk(parse(f.wk)),
     };
   }
   const BOXES = ['seed', 'sapling', 'grove'];
@@ -196,14 +241,29 @@
       v: 1, coins: d.coins, trees: C.totalTrees(), withered: C.witheredCount(), owned: d.collection.owned, opened: d.collection.opened || 0,
       badges: d.achievements, total: counted.reduce((a, s) => a + s.duration, 0), longest: counted.reduce((m, s) => Math.max(m, s.duration), 0),
       count: counted.length, streak: C.streakDays(), subjects, sessions, days: myDays(), decor: d.decor,
-      show: myShowcase(), live: liveNow(), garden: C.gardenShare(),
+      show: myShowcase(), live: liveNow(), garden: C.gardenShare(), pic: myPic(), hist: myHist(),
     });
+  }
+  // saved sessions from the last two years, for friends' full view of my stats
+  function myHist() {
+    const from = Date.now() - 730 * 864e5;
+    const list = D().sessions.filter((s) => C.counted(s) && +new Date(s.date) >= from).sort((a, b) => new Date(a.date) - new Date(b.date)).slice(-HIST_MAX);
+    const subs = [], idx = new Map();
+    const x = list.map((s) => {
+      if (!idx.has(s.subject)) { idx.set(s.subject, subs.length); subs.push([String(s.subject).slice(0, 40), C.colorOf(s.subject)]); }
+      return [Math.round(+new Date(s.date) / 1000), Math.round(s.duration), idx.get(s.subject), s.tree || 'oak', C.isWithered(s) ? 1 : 0];
+    });
+    return { s: subs, x };
+  }
+  function myWk() {
+    const days = myDays(10), t = todayKey();
+    return { k: weekKey(), s: personWeek(days).sec, d: t, t: days[t] ? days[t][0] : 0 };
   }
   // what I'm doing right now, for the online / studying dot friends see
   function liveNow() {
     const a = D().active;
     if (!a) return null;
-    return { s: a.subject, c: C.colorOf(a.subject), e: Math.floor(C.elapsedSec()), t: new Date().toISOString(), p: a.segStart ? 0 : 1 };
+    return { s: a.subject, c: C.colorOf(a.subject), e: Math.floor(C.elapsedSec()), t: new Date().toISOString(), p: a.segStart ? 0 : 1, tr: a.species || 'oak' };
   }
   // up to 3 earned badges picked to show next to my name
   const myShowcase = () => (Array.isArray(S().showcase) ? S().showcase : []).filter((id) => D().achievements[id]).slice(0, 3);
@@ -223,19 +283,58 @@
     pubTimer = setTimeout(() => { pubTimer = null; publish(); }, ms < 4000 ? ms : wait);
   }
   async function publish() {
-    if (!F.configured || C.readOnly()) return;
+    if (!F.configured || C.readOnly() || F.banned) return;
     if (pubBusy) { pubAgain = true; return; }
     pubBusy = true;
     lastPub = Date.now();
-    const r = await call('publish', { name: myName(), data: publicData(), grades: gradesData() });
+    const lv = liveNow();
+    const r = await call('publish', { name: myName(), data: publicData(), grades: gradesData(), live: lv ? JSON.stringify(lv) : '', wk: JSON.stringify(myWk()) });
     pubBusy = false;
-    if (r.ok) { F.code = r.value.code; F.me = r.value.uid; F.offline = false; paintCode(); }
+    if (r.ok) { F.code = r.value.code; F.me = r.value.uid; F.offline = false; paintCode(); boardSync(); }
     else {
       if (r.offline) F.offline = true;
-      setTimeout(() => schedulePublish(1000), 60000); // try again in a minute
+      if (r.status === 403) checkBan();
+      if (!F.banned) setTimeout(() => schedulePublish(1000), 60000); // try again in a minute
     }
     if (pubAgain) { pubAgain = false; schedulePublish(1000); }
   }
+  // ---------------- global leaderboard ----------------
+  // Everyone's hours this week. Only a name, a tree picture and hours go up, nothing else.
+  const boardName = () => cleanName(D().profile.name).name || 'Student';
+  let boardBusy = false;
+  async function boardSync() {
+    if (!F.configured || F.banned || boardBusy || C.readOnly()) return;
+    boardBusy = true;
+    const r = await call('board', { week: weekKey(), sec: personWeek(myDays(10)).sec, name: boardName(), pic: myPic() || '', hide: S().onBoard === false });
+    boardBusy = false;
+    if (!r.ok && r.status === 403) checkBan();
+  }
+  function cleanBoardRow(x) {
+    if (!isObj(x) || typeof x.uid !== 'string' || !SAFE_ID.test(x.uid)) return null;
+    return { uid: x.uid, name: txt(x.name, 24), pic: isTreeId(x.pic) ? x.pic : null, sec: int(x.sec, 604800) };
+  }
+  async function loadBoard(force) {
+    const B = F.board;
+    if (!F.configured || B.loading || (!force && Date.now() - B.at < 60000)) return;
+    B.loading = true;
+    const r = await call('boardTop', { week: weekKey() });
+    B.loading = false; B.at = Date.now();
+    if (r.ok) { B.rows = (Array.isArray(r.value) ? r.value : []).map(cleanBoardRow).filter(Boolean).sort((a, b) => b.sec - a.sec); B.err = ''; }
+    else B.err = r.offline ? "You're offline. The leaderboard loads when you're back online" : "Couldn't load the leaderboard. Try again in a minute";
+    paintBoard();
+  }
+  // the server said no: find out if this account was banned
+  let banChecked = 0;
+  async function checkBan() {
+    if (Date.now() - banChecked < 60000) return;
+    banChecked = Date.now();
+    const r = await call('banned');
+    if (r.ok && r.value === true && !F.banned) {
+      F.banned = true;
+      if (C.currentPage() === 'friends') paint();
+    }
+  }
+
   async function refresh(opts = {}) {
     if (!F.configured || F.loading) return;
     F.loading = true;
@@ -266,12 +365,49 @@
         if (reqs.length) C.toast(`👋 ${C.esc(shownName(reqs[0].name))} wants to be friends`, 4200);
       }
     } else if (r.offline) F.offline = true;
-    else F.error = r.error || 'Something went wrong';
+    else { F.error = r.error || 'Something went wrong'; if (r.status === 403) checkBan(); }
     C.updateNavDots();
     C.checkAchievements();
+    friendStatsChanged();
     if (C.currentPage() === 'friends') paint();
   }
-  let bgTimer = null, pingTimer = null, fastTimer = null;
+  // Only friends' profiles, in one request, every 30 seconds while you're looking at them, so
+  // online dots, live study time and the leaderboard keep up with what friends are doing.
+  let pulseBusy = false;
+  async function pulse() {
+    if (pulseBusy || !F.configured || F.loading || F.banned) return;
+    const uids = F.friends.filter((f) => f.mutual).map((f) => f.uid);
+    if (!uids.length) return;
+    pulseBusy = true;
+    const r = await call('pulse', { uids });
+    pulseBusy = false;
+    if (!r.ok) { if (!r.offline) refresh(); return; } // someone unfriended me: do a full refresh
+    let lost = false;
+    (Array.isArray(r.value) ? r.value : []).forEach((p) => {
+      const f = isObj(p) && F.friends.find((x) => x.uid === p.uid);
+      if (!f) return;
+      if (!p.mutual) { lost = true; return; }
+      // only the small fields come back here; everything else waits for the next full refresh
+      f.name = txt(p.name, 40) || f.name;
+      f.updated = isoDate(p.updated);
+      if (typeof p.wk === 'string') f.wk = cleanWk(parse(p.wk));
+      mergeLive(f, p.live);
+    });
+    F.pulsedAt = Date.now();
+    if (lost) return refresh();
+    friendStatsChanged();
+    C.updateNavDots();
+    if (C.currentPage() === 'friends') paint();
+  }
+  // a friend's full stats page is open: give it the newest numbers
+  function friendStatsChanged() {
+    const uid = C.friendStatsUid();
+    if (!uid) return;
+    const f = F.friends.find((x) => x.uid === uid && x.mutual);
+    const v = f && statsView(f);
+    if (v) C.updateFriendStats(v);
+  }
+  let bgTimer = null, pingTimer = null, fastTimer = null, tickTimer = null;
   async function start() {
     const st = await call('status');
     F.configured = !!(st.ok && st.value && st.value.configured);
@@ -283,29 +419,78 @@
     bgTimer = setInterval(() => { refresh({ notify: true }); }, 6 * 60 * 1000);
     // tell friends I'm online every 2 minutes (skipped when a full update just went out)
     clearInterval(pingTimer);
-    pingTimer = setInterval(() => { if (!C.readOnly() && Date.now() - lastPub > 100000) call('ping'); }, 2 * 60 * 1000);
-    // while the Friends tab is open, check on friends more often so online dots stay fresh
+    pingTimer = setInterval(() => { if (!C.readOnly() && !F.banned && Date.now() - lastPub > 100000) call('ping'); }, 2 * 60 * 1000);
+    // while friends are on screen, keep them fresh: their profiles every 30 seconds, and
+    // everything (requests, gifts, streaks) every 3 minutes
     clearInterval(fastTimer);
-    fastTimer = setInterval(() => { if (C.currentPage() === 'friends' && !document.hidden && Date.now() - F.loadedAt > 80000) refresh(); }, 30000);
+    fastTimer = setInterval(() => {
+      if (document.hidden) return;
+      const page = C.currentPage();
+      const watching = page === 'friends' || (C.friendStatsUid() && (page === 'stats' || page === 'subject'));
+      if (!watching) return;
+      if (page === 'friends' && Date.now() - F.loadedAt > 180000) refresh();
+      else if (Date.now() - Math.max(F.loadedAt, F.pulsedAt) > 25000) pulse();
+      if (page === 'friends' && !F.view && F.boardTab === 'world') loadBoard();
+    }, 30000);
+    // live study times tick along between updates
+    clearInterval(tickTimer);
+    tickTimer = setInterval(tickLive, 15000);
+  }
+  function tickLive() {
+    if (document.hidden || C.currentPage() !== 'friends') return;
+    $$('[data-live]').forEach((el) => {
+      const f = F.friends.find((x) => x.uid === el.dataset.live);
+      const lv = f && liveOf(f);
+      if (lv) el.textContent = liveText(lv);
+    });
   }
 
   // ---------------- online now ----------------
+  // Online means the app was open in the last 5 minutes (it checks in every 2). A session only
+  // counts as live while they're online, so if their app closes mid-session it stops counting,
+  // and a cancelled session simply disappears: live time is never added to their saved days.
   const ONLINE_MS = 5 * 60 * 1000;
+  function liveOf(f) {
+    const lv = f && f.info && f.info.live;
+    const seen = f && f.updated ? Date.parse(f.updated) : 0;
+    if (!lv || !seen || Date.now() - seen >= ONLINE_MS) return null;
+    const since = Date.parse(lv.t || f.updated);
+    // a start time from the future is nonsense (or a clock that's way off): ignore it
+    if (Number.isFinite(since) && since > Date.now() + 10 * 60000) return null;
+    const run = lv.p || !Number.isFinite(since) ? 0 : Math.max(0, (Date.now() - since) / 1000);
+    return { s: lv.s || 'something', c: lv.c, sec: Math.min((lv.e || 0) + run, 16 * 3600), paused: !!lv.p, tr: lv.tr };
+  }
+  const liveSec = (f) => { const l = liveOf(f); return l ? l.sec : 0; };
+  // their saved hours this week / today: the small copy is the freshest, then their day list
+  function savedWeek(f) {
+    const w = f.wk;
+    return w && w.k === weekKey() ? w.s : personWeek((f.info || {}).days || {}).sec;
+  }
+  function savedToday(f) {
+    const w = f.wk, days = (f.info || {}).days || {}, k = todayKey();
+    return Math.max(w && w.d === k ? w.t : 0, days[k] ? days[k][0] : 0);
+  }
+  // my own session that's running right now, for my row on the leaderboard
+  const myLiveSec = () => (D().active ? Math.max(0, C.elapsedSec()) : 0);
+  // "34 min of Accounting"
+  function liveMin(sec) {
+    const m = Math.floor(sec / 60);
+    if (m < 60) return `${Math.max(1, m)} min`;
+    return `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`;
+  }
+  const liveText = (l) => `${liveMin(l.sec)} of ${String(l.s).slice(0, 40)}`;
   function presence(f) {
-    const info = f.info || {};
     const seen = f.updated ? Date.parse(f.updated) : 0;
     const online = seen && Date.now() - seen < ONLINE_MS;
-    const live = info.live && typeof info.live === 'object' ? info.live : null;
-    if (online && live && !live.p) {
-      const sec = (+live.e || 0) + Math.max(0, (Date.now() - Date.parse(live.t || f.updated)) / 1000);
-      return { k: 'studying', rank: 0, t: `Studying ${shownSubject(live.s)}`, long: C.fmtDur(sec), c: live.c };
-    }
-    if (online && live) return { k: 'break', rank: 1, t: 'On a break' };
+    const l = liveOf(f);
+    if (l && !l.paused) return { k: 'studying', rank: 0, t: 'Studying', long: liveText(l), c: l.c };
+    if (l) return { k: 'break', rank: 1, t: 'On a break', long: liveText(l), c: l.c };
     if (online) return { k: 'online', rank: 2, t: 'Online' };
-    return { k: 'off', rank: 3, t: seen ? `Last on ${ago(f.updated)}` : 'Offline' };
+    return { k: 'off', rank: 3, t: seen ? `Offline · last on ${ago(f.updated)}` : 'Offline' };
   }
-  const shownSubject = (n) => C.esc(String(n || 'something').slice(0, 40));
-  const presDot = (p) => `<i class="fr-pres ${p.k}" title="${p.k === 'studying' ? `${p.t} · ${p.long}` : p.t}"></i>`;
+  // the status line, with the live part kept up to date by tickLive
+  const presLine = (p, f) => (p.long ? `<b>${C.esc(p.t)}</b> · <span data-live="${C.esc(f.uid)}">${C.esc(p.long)}</span>` : C.esc(p.t));
+  const presDot = (p) => `<i class="fr-pres ${p.k}" title="${C.esc(p.long ? `${p.t} · ${p.long}` : p.t)}"></i>`;
 
   // ---------------- showcase badges ----------------
   function showBadges(ids, earned, key, size = '') {
@@ -343,35 +528,102 @@
     const got = D().achievements || {};
     const cur = myShowcase();
     return `<div class="card fr-showcase stagger" style="--i:${i}">
-      <div class="card-head"><h3>Show off your badges</h3><span class="muted">Friends see these next to your name</span></div>
+      <div class="card-head"><h3>Your profile</h3><span class="muted">Friends see your picture and badges next to your name</span></div>
+      <div class="fr-me-row">
+      <button class="fr-pic-btn" id="fr-pic" title="Change your picture">${avatar(D().profile.name, F.me, 'big', myPic())}<span class="fr-pic-edit"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg></span><span class="fr-pic-lbl">${myPic() ? 'Change picture' : 'Pick a picture'}</span></button>
       <div class="fr-slots">${[0, 1, 2].map((k) => {
         const b = C.BADGES.find((x) => x.id === cur[k]);
         return b && got[b.id] ? `<button class="fr-slot full t-${b.tier}" style="--i:${k};--tc:${C.TIERS[b.tier][1]}" data-slot="${k}" title="Change"><span class="fr-slot-art">${C.badgeSvg(b, 'sl' + k + b.id)}</span><span class="fr-slot-name">${C.esc(b.name)}</span></button>`
           : `<button class="fr-slot" style="--i:${k}" data-slot="${k}"><span class="fr-slot-plus">+</span><span class="fr-slot-name">Pick a badge</span></button>`;
-      }).join('')}</div>
+      }).join('')}</div></div>
     </div>`;
+  }
+  // Profile pictures: only trees you've unlocked
+  function pickPic() {
+    const all = window.Tree.SPECIES, ord = window.Tree.RARITY_ORDER;
+    const mine = all.filter((sp) => C.owns(sp.id)).sort((a, b) => ord.indexOf(b.rarity) - ord.indexOf(a.rarity));
+    const locked = all.length - mine.length;
+    const cur = myPic();
+    const back = document.createElement('div');
+    back.className = 'modal-back';
+    back.innerHTML = `<div class="modal fr-pick fr-pic-pick"><h2>Pick a profile picture</h2><p>Any tree you've unlocked. Friends and the global leaderboard see it.</p>
+      <div class="fr-pic-grid">
+        <button class="fr-pic-opt${cur ? '' : ' on'}" style="--i:0" data-pic=""><span class="fr-av big" style="--av:${AV_COLORS[hash(F.me || shownName(D().profile.name)) % AV_COLORS.length]}">${C.esc(shownName(D().profile.name).slice(0, 1).toUpperCase())}</span><span>Letter</span></button>
+        ${mine.map((sp, i) => `<button class="fr-pic-opt${cur === sp.id ? ' on' : ''}" style="--i:${i + 1};--rc:${window.Tree.RARITIES[sp.rarity].color}" data-pic="${sp.id}">${avatar(D().profile.name, F.me, 'big', sp.id)}<span>${C.esc(sp.name)}</span></button>`).join('')}
+      </div>
+      ${locked ? `<p class="muted tiny-note">${locked} more tree${locked === 1 ? '' : 's'} to unlock from cases on the Trees page.</p>` : ''}
+      <div class="m-actions"><button class="btn" data-x="close">Close</button></div></div>`;
+    const close = () => { back.classList.add('closing'); setTimeout(() => back.remove(), 260); document.removeEventListener('keydown', esc); };
+    const esc = (e) => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', esc);
+    back.addEventListener('mousedown', (e) => { if (e.target === back) close(); });
+    $$('.fr-pic-opt', back).forEach((b) => b.addEventListener('click', () => {
+      const id = b.dataset.pic;
+      if (id && !C.owns(id)) return;
+      S().pic = id || null;
+      C.save(); schedulePublish(1500);
+      const r = b.getBoundingClientRect();
+      C.burst(r.left + r.width / 2, r.top + r.height / 2, { n: 26, up: true, speed: 5, shape: ['star4', 'dot'], glow: true, colors: ['#4ade80', '#fde047', '#ffffff'] });
+      close(); paint();
+    }));
+    $('[data-x]', back).addEventListener('click', close);
+    $('#modal-host').appendChild(back);
+    C.paintTrees(back);
   }
 
   // ---------------- weekly leaderboard ----------------
   const hrs = (sec) => `${(sec / 3600).toFixed(1)} h`;
+  // Friends: saved hours plus whatever is being studied right now (it drops off again if that
+  // session is cancelled). Everyone: hours from saved sessions, from the global list.
   function leaderboardCard(mutual, i) {
-    const rows = [{ me: true, uid: F.me || 'me', name: D().profile.name, sec: personWeek(myDays(10)).sec, show: myShowcase(), earned: D().achievements }]
-      .concat(mutual.map((f) => ({ f, uid: f.uid, name: f.name, sec: personWeek((f.info || {}).days || {}).sec, show: (f.info || {}).show, earned: (f.info || {}).badges || {} })))
-      .sort((a, b) => b.sec - a.sec || (a.me ? -1 : 1));
-    const top = Math.max(60, rows[0].sec);
+    const world = F.boardTab === 'world';
     return `<div class="card fr-board stagger" style="--i:${i}">
-      <div class="card-head"><h3>This week's leaderboard</h3><span class="muted">Hours studied since Monday</span></div>
-      <div class="fr-board-list">${rows.map((r, k) => {
-        const p = r.f ? presence(r.f) : null;
-        return `<${r.f ? 'button' : 'div'} class="fr-board-row${r.me ? ' me' : ''}${k < 3 && r.sec > 0 ? ` m${k + 1}` : ''}" style="--i:${k};--w:${Math.max(2, (r.sec / top) * 100).toFixed(1)}%"${r.f ? ` data-uid="${C.esc(r.uid)}"` : ''}>
-          <span class="fr-rank">${k + 1}</span>
-          <span class="fr-av-wrap">${avatar(r.name, r.uid, 'sm2')}${p ? presDot(p) : ''}</span>
-          <span class="fr-board-name"><b>${C.esc(r.me ? 'You' : shownName(r.name))}</b>${showBadges(r.show, r.earned, 'lb' + k, 'tiny')}</span>
+      <div class="card-head"><div><h3>This week's leaderboard</h3><span class="muted" id="fr-board-note">${world ? 'Everyone using the app · saved sessions since Monday' : 'Hours studied since Monday, live'}</span></div>
+        <div class="seg tiny" id="fr-board-seg"><div class="seg-pill"></div><button data-b="friends" class="${world ? '' : 'active'}">Friends</button><button data-b="world" class="${world ? 'active' : ''}">Everyone</button></div></div>
+      <div class="fr-board-list" id="fr-board-list">${world ? worldRows() : friendRows(mutual)}</div>
+    </div>`;
+  }
+  function boardRow(r, k, top, extra = '') {
+    const p = r.f ? presence(r.f) : null;
+    return `<${r.f ? 'button' : 'div'} class="fr-board-row${r.me ? ' me' : ''}${r.rank <= 3 && r.sec > 0 ? ` m${r.rank}` : ''}${p && p.k === 'studying' ? ' live' : ''}" style="--i:${Math.min(k, 20)};--w:${Math.max(2, (r.sec / top) * 100).toFixed(1)}%"${r.f ? ` data-uid="${C.esc(r.uid)}"` : ''}>
+          <span class="fr-rank">${r.rank || '–'}</span>
+          <span class="fr-av-wrap">${avatar(r.name, r.uid, 'sm2', r.pic)}${p ? presDot(p) : ''}</span>
+          <span class="fr-board-name"><b>${C.esc(r.me ? 'You' : shownName(r.name))}</b>${extra}${r.show ? showBadges(r.show, r.earned, 'lb' + k, 'tiny') : ''}</span>
           <span class="fr-board-bar"><i></i></span>
           <span class="fr-board-h">${hrs(r.sec)}</span>
         </${r.f ? 'button' : 'div'}>`;
-      }).join('')}</div>
-    </div>`;
+  }
+  function friendRows(mutual) {
+    const rows = [{ me: true, uid: F.me || 'me', name: D().profile.name, pic: myPic(), sec: personWeek(myDays(10)).sec + myLiveSec(), show: myShowcase(), earned: D().achievements }]
+      .concat(mutual.map((f) => ({ f, uid: f.uid, name: f.name, pic: picOf(f), sec: savedWeek(f) + liveSec(f), show: (f.info || {}).show, earned: (f.info || {}).badges || {} })))
+      .sort((a, b) => b.sec - a.sec || (a.me ? -1 : 1));
+    rows.forEach((r, k) => { r.rank = k + 1; });
+    const top = Math.max(60, rows[0].sec);
+    return rows.map((r, k) => boardRow(r, k, top)).join('') + (mutual.length ? '' : '<p class="muted fr-board-empty">Add friends to race them here, or see how you do against everyone.</p>');
+  }
+  function worldRows() {
+    const B = F.board;
+    if (!B.rows) return B.err ? `<p class="fr-banner err">${C.esc(B.err)}</p>` : '<div class="fr-board-skel">' + '<i></i>'.repeat(5) + '</div>';
+    if (S().onBoard === false) return '<p class="muted fr-board-empty">You\'ve hidden yourself from the global leaderboard (Privacy, above). You can still see everyone else.</p>' + worldList(B.rows, false);
+    return worldList(B.rows, true);
+  }
+  function worldList(list, withMe) {
+    const friends = new Map(F.friends.filter((f) => f.mutual).map((f) => [f.uid, f]));
+    const rows = list.slice(0, 50).map((x, k) => ({ uid: x.uid, name: x.name, pic: x.pic, sec: x.sec, rank: k + 1, me: x.uid === F.me, f: friends.get(x.uid) || null }));
+    if (withMe && F.me && !rows.some((r) => r.me)) rows.push({ me: true, uid: F.me, name: D().profile.name, pic: myPic(), sec: personWeek(myDays(10)).sec, rank: 0 });
+    if (!rows.length) return '<p class="muted fr-board-empty">No one is on the leaderboard yet this week. Finish a session to be first!</p>';
+    const top = Math.max(60, ...rows.map((r) => r.sec));
+    return rows.map((r, k) => boardRow(r, k, top, r.f ? '<span class="fr-chip tiny">Friend</span>' : '')).join('');
+  }
+  function paintBoard() {
+    const host = $('#fr-board-list');
+    if (!host || C.currentPage() !== 'friends' || F.view) return;
+    const mutual = F.friends.filter((f) => f.mutual);
+    host.innerHTML = F.boardTab === 'world' ? worldRows() : friendRows(mutual);
+    const note = $('#fr-board-note');
+    if (note) note.textContent = F.boardTab === 'world' ? 'Everyone using the app · saved sessions since Monday' : 'Hours studied since Monday, live';
+    C.paintTrees(host);
+    $$('.fr-board-row[data-uid]', host).forEach((c) => c.addEventListener('click', () => openProfile(c.dataset.uid)));
   }
 
   // ---------------- streaks ----------------
@@ -535,6 +787,12 @@
   function paint(fresh) {
     const host = $('#fr-body');
     if (!host || C.currentPage() !== 'friends') return;
+    // don't wipe out something you're typing (a friend code, your name); try again in a bit
+    if (!fresh) {
+      const a = document.activeElement;
+      const typing = (a && host.contains(a) && a.matches('input, textarea')) || $$('#fr-boxes input', host).some((b) => b.value);
+      if (typing) { clearTimeout(paint._later); paint._later = setTimeout(() => paint(), 8000); return; }
+    }
     // when the loading skeletons are swapped for real friend cards, those cards still pop in
     const skel = !!host.querySelector('.skel');
     if (fresh) paintedAt = performance.now();
@@ -548,14 +806,16 @@
       return;
     }
     if (F.view) return paintProfile(host, fresh);
-    const mutual = F.friends.filter((f) => f.mutual).sort((a, b) => presence(a).rank - presence(b).rank), waiting = F.friends.filter((f) => !f.mutual);
+    const mutual = F.friends.filter((f) => f.mutual).sort((a, b) => presence(a).rank - presence(b).rank), waiting = F.friends.filter((f) => !f.mutual && !f.gone), gone = F.friends.filter((f) => f.gone);
     const reqs = F.inbox.filter((x) => x.type === 'request' && !F.friends.some((f) => f.uid === x.from && f.mutual));
     const gifts = F.inbox.filter((x) => x.type === 'gift');
     const nm = cleanName(D().profile.name);
     let i = 1;
+    host.dataset.prof = '';
     host.innerHTML = `
+      ${F.banned ? `<div class="fr-banner err stagger" style="--i:${i++}">This account has been banned from Friends and the leaderboard. Everything else in the app still works as usual.</div>` : ''}
       ${F.offline ? `<div class="fr-banner stagger" style="--i:${i++}">You're offline. Friends will load when you're back online.</div>` : ''}
-      ${F.error && !F.offline ? `<div class="fr-banner err stagger" style="--i:${i++}">${C.esc(F.error)}</div>` : ''}
+      ${F.error && !F.offline && !F.banned ? `<div class="fr-banner err stagger" style="--i:${i++}">${C.esc(F.error)}</div>` : ''}
       ${!nm.name || nm.censored ? `<div class="card fr-name stagger" style="--i:${i++}"><div><h3>${nm.censored ? 'Pick a different name' : 'What should friends call you?'}</h3><p class="muted">${nm.censored ? 'Your name has a word that isn\'t allowed, so friends see "Student". ' : ''}Friends see the name from your profile.</p></div><div class="add-row"><input class="input" id="fr-name-in" maxlength="24" placeholder="Your name" value="${C.esc(nm.censored ? '' : D().profile.name || '')}"><button class="btn primary" id="fr-name-save">Save</button></div></div>` : ''}
       <div class="fr-top stagger" style="--i:${i++}">
         <div class="card fr-add">
@@ -566,34 +826,39 @@
         <div class="card fr-privacy">
           <div class="card-head"><h3>Privacy</h3></div>
           <div class="row-field"><label>Share my grades with friends</label><button class="switch${S().shareGrades ? ' on' : ''}" id="fr-share" role="switch"><span></span></button></div>
-          <p class="muted tiny-note">Friends you add can see your name, coins, trees, badges and study sessions. Grades stay private unless you switch this on.</p>
+          <div class="row-field"><label>Show me on the global leaderboard</label><button class="switch${S().onBoard !== false ? ' on' : ''}" id="fr-onboard" role="switch"><span></span></button></div>
+          <p class="muted tiny-note">Friends you add can see your name, coins, trees, badges and study sessions. Grades stay private unless you switch this on. Everyone else only sees your name, picture and hours this week on the global leaderboard.</p>
         </div>
       </div>
       ${showcaseCard(i++)}
       ${reqs.length ? `<div class="card stagger" style="--i:${i++}"><div class="card-head"><h3>Friend requests</h3></div><div class="fr-reqs">${reqs.map((r, k) => `<div class="fr-req" style="--i:${k}" data-id="${C.esc(r.id)}">${avatar(r.name, r.from)}<span class="fr-req-name"><b>${C.esc(shownName(r.name))}</b><small>${C.esc(r.code || '')} wants to be friends</small></span><button class="btn ghost small" data-a="block" title="Hide requests from this person from now on">Block</button><button class="btn ghost small" data-a="no">Not now</button><button class="btn primary small" data-a="yes">Accept</button></div>`).join('')}</div></div>` : ''}
       ${gifts.length ? `<div class="card stagger fr-gifts-card" style="--i:${i++}"><div class="card-head"><h3>Gifts for you</h3><span class="muted">Click a gift to open it</span></div><div class="fr-gifts">${gifts.map((g, k) => `<button class="fr-gift" style="--i:${k};--cc:${g.kind === 'case' ? C.caseColor(g.box) : '#fbbf24'}" data-id="${C.esc(g.id)}"><span class="fr-gift-box"><i class="lid"></i><i class="body"></i><i class="ribbon"></i></span><span class="fr-gift-from">From <b>${C.esc(shownName(g.name))}</b></span></button>`).join('')}</div></div>` : ''}
-      ${mutual.length ? leaderboardCard(mutual, i++) : ''}
+      ${leaderboardCard(mutual, i++)}
       <div class="card stagger" style="--i:${i++}">
         <div class="card-head"><h3>Your friends${mutual.length ? ` · ${mutual.length}` : ''}</h3><button class="btn small ghost" id="fr-refresh"${F.loading ? ' disabled' : ''}><svg viewBox="0 0 24 24" class="${F.loading ? 'spin' : ''}"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>${F.loading ? 'Loading' : 'Refresh'}</button></div>
         ${!F.loadedAt && F.loading ? '<div class="fr-grid">' + '<div class="fr-card skel"></div>'.repeat(3) + '</div>'
-          : mutual.length || waiting.length ? `<div class="fr-grid">${mutual.map(friendCard).join('')}${waiting.map(waitingCard).join('')}</div>`
+          : mutual.length || waiting.length || gone.length ? `<div class="fr-grid">${mutual.map(friendCard).join('')}${waiting.map(waitingCard).join('')}${gone.map(goneCard).join('')}</div>`
           : `<div class="fr-empty">${peopleArt()}<h3>No friends yet</h3><p class="muted">Share your code <b>${C.esc(F.code || '')}</b> or add a friend with theirs. Then you can start a streak and do weekly tasks together.</p></div>`}
       </div>`;
     wireList(host);
+    C.paintTrees(host);
+    requestAnimationFrame(C.positionSegs);
+    if (F.boardTab === 'world') loadBoard();
   }
   function friendCard(f, k) {
     const info = f.info || {};
     const si = streakInfo(f);
-    const week = personWeek(info.days || {}).sec;
-    const today = (info.days && info.days[todayKey()]) ? info.days[todayKey()][0] : 0;
+    const now = liveSec(f);
+    const week = savedWeek(f) + now;
+    const today = savedToday(f) + now;
     const dots = streakClaimable(f).length + tasksClaimable(f) + (f.streak && f.streak.status === 'pending' && f.streak.by !== F.me ? 1 : 0);
     const p = presence(f);
     return `<button class="fr-card pres-${p.k}" style="--i:${k}" data-uid="${C.esc(f.uid)}">
       ${dots ? `<i class="ndot">${dots}</i>` : ''}
-      <span class="fr-card-top"><span class="fr-av-wrap">${avatar(f.name, f.uid)}${presDot(p)}</span><span class="fr-card-name"><span class="fr-name-row"><b>${C.esc(shownName(f.name))}</b>${showBadges(info.show, info.badges, 'fc' + k)}</span><small>${C.esc(f.code || '')}</small></span>
+      <span class="fr-card-top"><span class="fr-av-wrap">${avatar(f.name, f.uid, '', picOf(f))}${presDot(p)}</span><span class="fr-card-name"><span class="fr-name-row"><b>${C.esc(shownName(f.name))}</b>${showBadges(info.show, info.badges, 'fc' + k)}</span><small>${C.esc(f.code || '')}</small></span>
       ${si && si.n ? `<span class="fr-flame${si.todayDone ? ' lit' : ''}" title="${si.n} day streak">${flameSvg()}<b>${si.n}</b></span>` : f.streak && f.streak.status === 'pending' ? '<span class="fr-chip">Streak invite</span>' : ''}</span>
       <span class="fr-card-stats"><span><small>This week</small><b>${C.fmtDur(week)}</b></span><span><small>Trees</small><b>${info.trees || 0}</b></span><span><small>Coins</small><b>${(info.coins || 0).toLocaleString()}</b></span></span>
-      <span class="fr-status ${p.k}"${p.c ? ` style="--sc:${C.esc(p.c)}"` : ''}>${p.k === 'studying' ? `<b>${p.t}</b> · ${p.long}` : `${p.t}${today >= 600 ? ` · studied ${C.fmtDur(today)} today` : ''}`}</span>
+      <span class="fr-status ${p.k}"${p.c ? ` style="--sc:${C.esc(p.c)}"` : ''}>${p.long ? presLine(p, f) : `${C.esc(p.t)}${today >= 600 ? ` · studied ${C.fmtDur(today)} today` : ''}`}</span>
     </button>`;
   }
   function waitingCard(f, k) {
@@ -601,6 +866,14 @@
       <span class="fr-card-top">${avatar(S().names[f.uid] || '?', f.uid)}<span class="fr-card-name"><b>${C.esc(shownName(S().names[f.uid] || 'Friend'))}</b><small>Request sent</small></span></span>
       <span class="muted fr-wait-txt">Waiting for them to add you back. Their profile opens once they do.</span>
       <button class="btn ghost small" data-cancel="${C.esc(f.uid)}">Cancel request</button>
+    </div>`;
+  }
+  // their account was deleted (or banned), so all that's left is to take them off the list
+  function goneCard(f, k) {
+    return `<div class="fr-card waiting gone" style="--i:${k + 1}">
+      <span class="fr-card-top">${avatar(S().names[f.uid] || '?', f.uid)}<span class="fr-card-name"><b>${C.esc(shownName(S().names[f.uid] || 'Friend'))}</b><small>Account removed</small></span></span>
+      <span class="muted fr-wait-txt">This account doesn't exist anymore.</span>
+      <button class="btn ghost small" data-cancel="${C.esc(f.uid)}">Remove</button>
     </div>`;
   }
   function peopleArt() {
@@ -668,8 +941,28 @@
       ns.addEventListener('click', go);
       $('#fr-name-in', host).addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
     }
+    const ob = $('#fr-onboard', host);
+    if (ob) ob.addEventListener('click', () => {
+      S().onBoard = S().onBoard === false;
+      ob.classList.toggle('on', S().onBoard !== false);
+      C.save();
+      C.toast(S().onBoard !== false ? "You're on the global leaderboard" : "You're hidden from the global leaderboard");
+      boardSync().then(() => { F.board.at = 0; if (F.boardTab === 'world') loadBoard(true); });
+    });
+    const pic = $('#fr-pic', host);
+    if (pic) pic.addEventListener('click', pickPic);
+    $$('#fr-board-seg button', host).forEach((b) => b.addEventListener('click', () => {
+      if (F.boardTab === b.dataset.b) return;
+      F.boardTab = b.dataset.b;
+      $$('#fr-board-seg button', host).forEach((x) => x.classList.toggle('active', x === b));
+      C.positionSegs();
+      const list = $('#fr-board-list', host);
+      list.classList.remove('swap'); void list.offsetWidth; list.classList.add('swap');
+      paintBoard();
+      if (F.boardTab === 'world') loadBoard();
+    }));
     const rf = $('#fr-refresh', host);
-    if (rf) rf.addEventListener('click', () => refresh({ show: true, notify: true }));
+    if (rf) rf.addEventListener('click', () => { refresh({ show: true, notify: true }); if (F.boardTab === 'world') loadBoard(true); });
     $$('.fr-req', host).forEach((row) => $$('button', row).forEach((b) => b.addEventListener('click', async () => {
       const item = F.inbox.find((x) => x.id === row.dataset.id);
       if (!item) return;
@@ -751,11 +1044,21 @@
     const info = f.info || {};
     const si = streakInfo(f);
     const dots = { together: streakClaimable(f).length + tasksClaimable(f) + (f.streak && f.streak.status === 'pending' && f.streak.by !== F.me ? 1 : 0) };
+    // a background update of the same profile: only the live parts change, so the garden,
+    // trees and badges don't get redrawn every 30 seconds
+    if (!fresh && host.dataset.prof === f.uid && $('#fr-tab-body', host)) {
+      const p = presence(f), st = $('.fr-prof-status', host), dot = $('.fr-prof-head .fr-pres', host);
+      if (st) { st.className = `muted fr-prof-status ${p.k}`; st.innerHTML = `${C.esc(f.code || '')} · ${presLine(p, f)}`; }
+      if (dot) dot.outerHTML = presDot(p);
+      if (F.tab === 'stats' || F.tab === 'together') paintTab(f, null);
+      return;
+    }
+    host.dataset.prof = f.uid;
     host.innerHTML = `
       <div class="fr-prof-head stagger" style="--i:1">
         <button class="icon-btn" id="fr-back" title="Back to friends"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
-        <span class="fr-av-wrap big">${avatar(f.name, f.uid, 'big')}${presDot(presence(f))}</span>
-        <div class="fr-prof-name"><h2>${C.esc(shownName(f.name))}${showBadges(info.show, info.badges, 'ph', 'big')}</h2><span class="muted">${C.esc(f.code || '')} · ${(() => { const p = presence(f); return p.k === 'studying' ? `${p.t} · ${p.long}` : p.t; })()}</span></div>
+        <span class="fr-av-wrap big">${avatar(f.name, f.uid, 'big', picOf(f))}${presDot(presence(f))}</span>
+        <div class="fr-prof-name"><h2>${C.esc(shownName(f.name))}${showBadges(info.show, info.badges, 'ph', 'big')}</h2><span class="muted fr-prof-status ${presence(f).k}">${C.esc(f.code || '')} · ${presLine(presence(f), f)}</span></div>
         <div class="head-stats">
           <div class="mini-stat"><span class="ms-label">Coins</span><span class="ms-val"><span class="coin sm"></span> ${(info.coins || 0).toLocaleString()}</span></div>
           <div class="mini-stat"><span class="ms-label">Trees</span><span class="ms-val">${info.trees || 0}</span></div>
@@ -785,7 +1088,8 @@
       paintTab(f, dir);
     }));
     requestAnimationFrame(C.positionSegs);
-    paintTab(f, 0);
+    C.paintTrees($('.fr-prof-head', host));
+    paintTab(f, fresh ? 0 : null);
   }
   function ago(iso) {
     const s = (Date.now() - new Date(iso)) / 1000;
@@ -802,6 +1106,7 @@
     body.classList.remove('slide-l', 'slide-r', 'anim-done');
     void body.offsetWidth;
     if (dir) body.classList.add(dir > 0 ? 'slide-r' : 'slide-l');
+    if (dir === null) dir = 0;
     const info = f.info || {};
     const fn = { stats: tabStats, garden: tabGarden, sessions: tabSessions, trees: tabTrees, badges: tabBadges, grades: tabGrades, together: tabTogether, gift: tabGift }[F.tab];
     body.innerHTML = fn(f, info);
@@ -810,18 +1115,40 @@
     if (after) after(f, body);
   }
 
+  // What the full Stats page needs to show a friend's sessions (see openFriendStats in app.js)
+  function statsView(f) {
+    const h = f.info && f.info.hist;
+    if (!h) return null;
+    const colors = new Map(), order = [];
+    h.subs.forEach((x) => { if (!colors.has(x.n)) { colors.set(x.n, x.c); order.push(x.n); } });
+    const sessions = h.list.map((x, i) => ({ id: 'f' + i, date: new Date(x.t).toISOString(), duration: x.s, subject: h.subs[x.k].n, color: h.subs[x.k].c, tree: x.tr, outcome: x.w ? 'withered' : 'grown' }));
+    const l = liveOf(f);
+    if (l) {
+      sessions.push({ id: 'flive', live: true, date: new Date(Date.now() - l.sec * 1000).toISOString(), duration: Math.floor(l.sec), subject: l.s, color: l.c, tree: l.tr || 'oak', outcome: 'grown' });
+      if (!colors.has(l.s)) { colors.set(l.s, l.c); order.push(l.s); }
+    }
+    const last = h.list[h.list.length - 1];
+    return { uid: f.uid, name: shownName(f.name), sessions, colors, order, sig: `${h.list.length}|${last ? last.t : 0}|${l ? l.s + Math.floor(l.sec / 60) : ''}` };
+  }
   function tabStats(f, info) {
     const days = info.days || {};
-    const week = personWeek(days);
+    const week = { sec: savedWeek(f) };
+    const l = liveOf(f);
+    week.sec += l ? l.sec : 0;
     const bars = [];
     for (let i = 6; i >= 0; i--) {
       const d = C.addDays(new Date(), -i), k = C.dayKey(d);
-      bars.push({ label: d.toLocaleDateString([], { weekday: 'short' }), sec: days[k] ? days[k][0] : 0, today: i === 0 });
+      bars.push({ label: d.toLocaleDateString([], { weekday: 'short' }), sec: i === 0 ? savedToday(f) + (l ? l.sec : 0) : days[k] ? days[k][0] : 0, today: i === 0 });
     }
     const max = Math.max(3600, ...bars.map((b) => b.sec));
     const subs = info.subjects || [];
     const smax = subs.length ? subs[0].s : 1;
-    return `<div class="stat-cards fr-stat-cards">
+    const who = C.esc(shownName(f.name));
+    const live = l ? `<div class="fr-live stagger" style="--i:0;--sc:${C.esc(l.c)}"><i class="fr-live-dot${l.paused ? ' paused' : ''}"></i><span><b>${l.paused ? 'On a break' : 'Studying now'}</b> · <span data-live="${C.esc(f.uid)}">${C.esc(liveText(l))}</span></span><small class="muted">${l.paused ? 'Paused' : 'Counts in their stats once they finish it'}</small></div>` : '';
+    const full = info.hist
+      ? `<button class="btn primary small fr-full" id="fr-full"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>See all of ${who}'s stats</button>`
+      : `<span class="muted tiny-note">Full stats show up once ${who} updates the app.</span>`;
+    return `${live}<div class="fr-stats-top">${full}</div><div class="stat-cards fr-stat-cards">
         <div class="stat"><span class="s-label">Total time</span><span class="s-val">${C.fmtDur(info.total || 0)}</span></div>
         <div class="stat"><span class="s-label">This week</span><span class="s-val">${C.fmtDur(week.sec)}</span></div>
         <div class="stat"><span class="s-label">Sessions</span><span class="s-val">${info.count || 0}</span></div>
@@ -831,7 +1158,7 @@
         <div class="card"><div class="card-head"><h3>Last 7 days</h3><span class="muted">Longest session ${C.fmtDur(info.longest || 0)}</span></div>
           <div class="fr-bars">${bars.map((b, i) => `<div class="fr-bar${b.today ? ' today' : ''}" style="--i:${i}" data-tip="${C.esc(b.label)}: ${C.esc(C.fmtDur(b.sec))}"><i style="--h:${((b.sec / max) * 100).toFixed(1)}%"></i><span>${C.esc(b.label)}</span></div>`).join('')}</div></div>
         <div class="card"><div class="card-head"><h3>Subjects</h3></div>
-          ${subs.length ? `<div class="hbars">${subs.map((s, i) => `<div class="hbar" style="--c:${C.esc(s.c)};--i:${i}"><span class="nm"><i></i>${C.esc(s.n)}</span><div class="track"><div class="fill" style="--w:${((s.s / smax) * 100).toFixed(1)}%"></div></div><span class="v">${C.fmtDur(s.s)}</span></div>`).join('')}</div>` : '<div class="empty">No study time yet.</div>'}</div>
+          ${subs.length ? `<div class="hbars">${subs.map((s, i) => `<div class="hbar${info.hist ? ' pick' : ''}" style="--c:${C.esc(s.c)};--i:${i}" data-k="${i}"${info.hist ? ` title="See ${who}'s stats for ${C.esc(s.n)}"` : ''}><span class="nm"><i></i>${C.esc(s.n)}</span><div class="track"><div class="fill" style="--w:${((s.s / smax) * 100).toFixed(1)}%"></div></div><span class="v">${C.fmtDur(s.s)}</span></div>`).join('')}</div>` : '<div class="empty">No study time yet.</div>'}</div>
       </div>`;
   }
   function wireStats(f, body) {
@@ -843,6 +1170,12 @@
       b.addEventListener('mousemove', C.moveTip);
       b.addEventListener('mouseleave', C.hideTip);
     });
+    const full = $('#fr-full', body);
+    if (full) full.addEventListener('click', () => C.openFriendStats(statsView(f)));
+    $$('.hbar.pick', body).forEach((r) => r.addEventListener('click', () => {
+      const sub = ((f.info || {}).subjects || [])[+r.dataset.k];
+      if (sub) C.openFriendStats(statsView(f), sub.n);
+    }));
   }
   // their garden, laid out the way they arranged it, with their decorations
   function tabGarden(f, info) {
@@ -943,8 +1276,8 @@
           <h3>${n ? `${n} day streak with ${name}` : `Your streak with ${name} starts today`}</h3>
           <p class="muted">${si && si.todayDone ? 'Today counts! See you tomorrow.' : si && si.atRisk ? 'Study today, both of you, or the streak goes back to 0.' : `Both study ${STREAK_MIN / 60} minutes today to light the flame.`}</p>
           <div class="fr-today-pair">
-            <span class="${me >= STREAK_MIN ? 'ok' : ''}">${avatar(D().profile.name, F.me, 'sm')}You · ${C.fmtDur(Math.min(me, 24 * 3600))}${me >= STREAK_MIN ? ' ✓' : ` of ${STREAK_MIN / 60}m`}</span>
-            <span class="${them >= STREAK_MIN ? 'ok' : ''}">${avatar(f.name, f.uid, 'sm')}${name} · ${C.fmtDur(them)}${them >= STREAK_MIN ? ' ✓' : ` of ${STREAK_MIN / 60}m`}</span>
+            <span class="${me >= STREAK_MIN ? 'ok' : ''}">${avatar(D().profile.name, F.me, 'sm', myPic())}You · ${C.fmtDur(Math.min(me, 24 * 3600))}${me >= STREAK_MIN ? ' ✓' : ` of ${STREAK_MIN / 60}m`}</span>
+            <span class="${them >= STREAK_MIN ? 'ok' : ''}">${avatar(f.name, f.uid, 'sm', picOf(f))}${name} · ${C.fmtDur(them)}${them >= STREAK_MIN ? ' ✓' : ` of ${STREAK_MIN / 60}m`}${liveSec(f) >= 60 ? ` <em class="fr-now">+${C.esc(liveMin(liveSec(f)))} now</em>` : ''}</span>
           </div>
         </div>
         <button class="btn ghost small fr-end" data-s="end" title="End this streak">End</button>
@@ -1100,7 +1433,7 @@
 
   window.Friends = {
     init(ctx) { C = ctx; const el = $('#fr-code'); if (el) el.addEventListener('click', copyCode); },
-    start, render, free, refresh, cleanName, isBadName, badgeMetrics, pending,
+    start, render, free, refresh, pulse, cleanName, isBadName, badgeMetrics, pending,
     changed: () => schedulePublish(),
     // the timer started, paused or stopped: tell friends soon, not in 2 minutes
     live: () => schedulePublish(1500),

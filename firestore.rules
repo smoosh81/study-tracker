@@ -15,34 +15,50 @@ service cloud.firestore {
       return t > request.time - duration.value(3, 'd') && t < request.time + duration.value(2, 'd');
     }
     function profile(uid) { return get(/databases/$(database)/documents/profiles/$(uid)); }
+    // Admins: password accounts whose id is listed here (Firebase console > Authentication > Users).
+    // Put your admin account's User UID between the quotes. Nobody else can ban or unban.
+    function isAdmin() {
+      return signedIn() && request.auth.token.firebase.sign_in_provider == 'password'
+        && request.auth.uid in ['PASTE_YOUR_ADMIN_UID_HERE'];
+    }
+    // banned accounts can't write anything
+    function notBanned() { return !exists(/databases/$(database)/documents/bans/$(me())); }
+    // every tree in the app, for profile pictures on the global leaderboard ('' = no picture)
+    function isTree(t) {
+      return t in ['oak', 'pine', 'birch', 'fir', 'maple', 'spruce', 'mint', 'apple', 'cypress', 'blossom', 'gold',
+        'willow', 'crimson', 'frost', 'twilight', 'ember', 'aurora', 'sunfire', 'spirit', 'celestial'];
+    }
     // true when `uid` has me on their friends list
     function listedBy(uid) { return exists(/databases/$(database)/documents/profiles/$(uid)) && me() in profile(uid).data.friends; }
 
     // 4-letter friend codes. Anyone signed in can look one up (it only gives a name).
     match /codes/{code} {
       allow get: if signedIn();
-      allow create: if signedIn() && isCode(code)
+      allow create: if signedIn() && isCode(code) && notBanned()
         && request.resource.data.keys().hasOnly(['uid', 'name'])
         && request.resource.data.uid == me() && okName(request.resource.data.name)
         && getAfter(/databases/$(database)/documents/profiles/$(me())).data.code == code;
-      allow update: if signedIn() && resource.data.uid == me()
+      allow update: if signedIn() && resource.data.uid == me() && notBanned()
         && request.resource.data.keys().hasOnly(['uid', 'name'])
         && request.resource.data.uid == me() && okName(request.resource.data.name);
+      allow delete: if isAdmin();
     }
 
     // Profiles: only the owner writes; only people the owner has added can read.
     match /profiles/{uid} {
-      allow get: if signedIn() && (uid == me() || me() in resource.data.friends);
-      allow create, update: if signedIn() && uid == me() && validProfile() && codeOk();
-      allow delete: if signedIn() && uid == me();
+      allow get: if signedIn() && (uid == me() || me() in resource.data.friends || isAdmin());
+      allow create, update: if signedIn() && uid == me() && notBanned() && validProfile() && codeOk();
+      allow delete: if signedIn() && (uid == me() || isAdmin());
     }
     function validProfile() {
       let d = request.resource.data;
-      return d.keys().hasOnly(['name', 'code', 'friends', 'data', 'grades', 'updated'])
+      return d.keys().hasOnly(['name', 'code', 'friends', 'data', 'grades', 'updated', 'live', 'wk'])
         && okName(d.name) && d.friends is list && d.friends.size() <= 200
         && (!('updated' in d) || okTime(d.updated))
         && (!('data' in d) || (d.data is string && d.data.size() < 400000))
-        && (!('grades' in d) || (d.grades is string && d.grades.size() < 60000));
+        && (!('grades' in d) || (d.grades is string && d.grades.size() < 60000))
+        && (!('live' in d) || (d.live is string && d.live.size() < 1000))
+        && (!('wk' in d) || (d.wk is string && d.wk.size() < 500));
     }
     // a code can be set once, and only to a code this account owns
     function codeOk() {
@@ -56,7 +72,7 @@ service cloud.firestore {
     // Friend requests and gifts. Only the owner reads and removes them.
     match /inbox/{to}/items/{id} {
       allow get, list, delete: if signedIn() && to == me();
-      allow create: if signedIn() && to != me() && validItem(to, id);
+      allow create: if signedIn() && to != me() && notBanned() && validItem(to, id);
     }
     function validItem(to, id) {
       let d = request.resource.data;
@@ -74,11 +90,11 @@ service cloud.firestore {
     // Friend streaks: one doc per pair, id is the two account ids sorted and joined by "_".
     match /streaks/{pair} {
       allow get: if signedIn() && (resource == null || me() in resource.data.members);
-      allow create: if signedIn() && validStreak() && recentDay(request.resource.data.since)
+      allow create: if signedIn() && notBanned() && validStreak() && recentDay(request.resource.data.since)
         && request.resource.data.by == me() && request.resource.data.status == 'pending'
         && pair == request.resource.data.members[0] + '_' + request.resource.data.members[1]
         && listedBy(request.resource.data.members[0] == me() ? request.resource.data.members[1] : request.resource.data.members[0]);
-      allow update: if signedIn() && me() in resource.data.members && validStreak()
+      allow update: if signedIn() && me() in resource.data.members && notBanned() && validStreak()
         && request.resource.data.members == resource.data.members
         && request.resource.data.by == resource.data.by
         // the start day can only be moved to today (accepting or restarting), never back in time
@@ -93,6 +109,43 @@ service cloud.firestore {
         && d.members is list && d.members.size() == 2 && me() in d.members && d.members[0] < d.members[1]
         && d.status in ['pending', 'active'] && d.since is string && d.since.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
         && (!('updated' in d) || okTime(d.updated));
+    }
+
+    // Global leaderboard, one list per week (the week's Monday, YYYY-MM-DD). Anyone signed in can
+    // read it, and it only holds a name, a tree picture and hours. Hours can only grow as fast as
+    // real time passes, so nobody can jump to the top by typing in a big number.
+    match /boards/{week}/people/{uid} {
+      allow get: if signedIn();
+      allow list: if signedIn() && request.query.limit <= 100;
+      allow create: if signedIn() && uid == me() && notBanned() && validBoard(week)
+        && request.resource.data.sec * 1000 <= request.time.toMillis() - weekStart(week).toMillis() + 14 * 3600 * 1000;
+      allow update: if signedIn() && uid == me() && notBanned() && validBoard(week)
+        && (request.resource.data.sec <= resource.data.sec
+          || request.resource.data.sec * 1000 <= resource.data.sec * 1000 + (request.time.toMillis() - resource.data.at.toMillis()) + 600 * 1000);
+      allow delete: if signedIn() && (uid == me() || isAdmin());
+    }
+    function weekStart(w) {
+      let p = w.split('-');
+      return timestamp.date(int(p[0]), int(p[1]), int(p[2]));
+    }
+    function validBoard(week) {
+      let d = request.resource.data;
+      return week.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && weekStart(week) > request.time - duration.value(8, 'd') && weekStart(week) < request.time + duration.value(1, 'd')
+        && d.keys().hasOnly(['name', 'pic', 'sec', 'at']) && d.name is string && d.name.size() <= 24
+        && (d.pic == '' || isTree(d.pic)) && d.sec is int && d.sec >= 0 && d.sec <= 604800 && d.at == request.time;
+    }
+
+    // Bans. Only admins write them; a banned person can see that they're banned.
+    match /bans/{uid} {
+      allow get: if signedIn() && (uid == me() || isAdmin());
+      allow list: if isAdmin();
+      allow create, update: if isAdmin()
+        && request.resource.data.keys().hasOnly(['name', 'code', 'reason', 'at'])
+        && okName(request.resource.data.name) && request.resource.data.code is string && request.resource.data.code.size() <= 4
+        && request.resource.data.reason is string && request.resource.data.reason.size() <= 200
+        && request.resource.data.at == request.time;
+      allow delete: if isAdmin();
     }
   }
 }
