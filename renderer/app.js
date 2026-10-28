@@ -4,13 +4,13 @@
 
   // ---------------- constants ----------------
   const ROOT_SEC = 600;              // 10 minutes for a tree to take root
-  // Coins: 1 per minute studied plus a 5 coin bonus for every full hour, times the tree's rarity boost.
+  // Coins: 1 per minute studied plus a 5 coin bonus for every full hour. Every tree earns the same
+  // (rarity boosts were removed in 1.21.0; past sessions keep the coins they were paid).
   // Nothing under 10 minutes. Since 1.13.0 they're paid in one go when the session is finished and saved.
   const HOUR_BONUS = 5;
-  function coinsFor(sec, species) {
+  function coinsFor(sec) {
     if (sec < ROOT_SEC) return 0;
-    const base = Math.floor(sec / 60) + HOUR_BONUS * Math.floor(sec / 3600);
-    return Math.round(base * (1 + boostOf(species)));
+    return Math.floor(sec / 60) + HOUR_BONUS * Math.floor(sec / 3600);
   }
   const PALETTE = ['#4ade80', '#38bdf8', '#fb923c', '#f472b6', '#a78bfa', '#facc15', '#2dd4bf', '#f87171', '#60a5fa', '#c084fc', '#34d399', '#fbbf24', '#e879f9', '#94a3b8', '#a3e635', '#22d3ee', '#fda4af', '#d97706'];
   const THEMES = [
@@ -338,8 +338,6 @@
   const counted = (s) => !s.cancelled; // cancelled sessions show in history but not in totals
   const owns = (id) => (D.collection.owned[id] || 0) > 0;
   const rarityOf = (id) => window.Tree.RARITIES[window.Tree.get(id).rarity];
-  const boostOf = (id) => rarityOf(id).boost;
-  const pct = (b) => `+${Math.round(b * 100)}%`;
   const isFav = (id) => D.favTrees.includes(id);
   // favourites first, then rarest first
   function treeOrder(a, b) {
@@ -862,7 +860,7 @@
     else if (sec < ROOT_SEC) cap.textContent = `${fmtMS(ROOT_SEC - sec)} until your tree takes root`;
     else {
       const next = 3600 - (sec % 3600);
-      cap.textContent = next <= 600 ? `Hour bonus in ${fmtMS(next)}` : `${coinsFor(sec, D.active.species).toLocaleString()} coins when you finish`;
+      cap.textContent = next <= 600 ? `Hour bonus in ${fmtMS(next)}` : `${coinsFor(sec).toLocaleString()} coins when you finish`;
     }
     if (treeSvg && D.active) {
       const g = window.Tree.growthFor(sec);
@@ -1034,7 +1032,7 @@
     const rooted = D.active.rooted;
     const ok = await modal({
       title: 'Finish this session?',
-      body: rooted ? `You studied ${D.active.subject} for ${fmtDur(sec)}. It'll be saved, your tree stays in your garden, and you'll get ${Math.max(0, coinsFor(sec, D.active.species) - (D.active.coins || 0))} coins.`
+      body: rooted ? `You studied ${D.active.subject} for ${fmtDur(sec)}. It'll be saved, your tree stays in your garden, and you'll get ${Math.max(0, coinsFor(sec) - (D.active.coins || 0))} coins.`
         : `You studied ${D.active.subject} for ${fmtDur(sec)}. The time will be saved, but your sapling needed 10 minutes to take root, so it will wither.`,
       actions: [{ label: 'Keep studying', ghost: true, value: false }, { label: 'Finish & save', primary: true, value: true }],
     });
@@ -1042,7 +1040,7 @@
     const total = Math.floor(elapsedSec());
     const a = finishActive();
     // the session's coins, paid now in one go (minus anything an older version already paid out)
-    const earned = Math.max(0, coinsFor(total, a.species) - (a.coins || 0));
+    const earned = Math.max(0, coinsFor(total) - (a.coins || 0));
     a.coins = (a.coins || 0) + earned;
     D.coins += earned;
     recordSession(a, total, false);
@@ -1121,8 +1119,8 @@
     const list = window.Tree.SPECIES.filter((x) => owns(x.id)).sort(treeOrder);
     host.innerHTML = list.map((sp, i) => {
       const r = window.Tree.RARITIES[sp.rarity];
-      return `<button class="tree-chip${T.tree === sp.id ? ' selected' : ''}${isFav(sp.id) ? ' fav' : ''}" style="--rc:${r.color};--i:${i}" data-t="${sp.id}" title="${esc(sp.name)} · ${r.name}${r.boost ? ` · ${pct(r.boost)} coins` : ''}">
-        <span class="tc-img">${staticTree(sp.id, 3 * 3600, false, 'tc' + sp.id)}</span><span class="tc-name">${esc(sp.name)}</span>${r.boost ? `<span class="tc-boost">${pct(r.boost)}</span>` : ''}${starHtml(sp.id)}</button>`;
+      return `<button class="tree-chip${T.tree === sp.id ? ' selected' : ''}${isFav(sp.id) ? ' fav' : ''}" style="--rc:${r.color};--i:${i}" data-t="${sp.id}" title="${esc(sp.name)} · ${r.name}">
+        <span class="tc-img">${staticTree(sp.id, 3 * 3600, false, 'tc' + sp.id)}</span><span class="tc-name">${esc(sp.name)}</span>${starHtml(sp.id)}</button>`;
     }).join('');
     paintTrees(host);
     $$('.fav-star', host).forEach((st) => st.addEventListener('click', (ev) => {
@@ -1141,13 +1139,11 @@
       T.tree = c.dataset.t;
       D.selectedTree = T.tree; save();
       $$('.tree-chip', host).forEach((x) => x.classList.toggle('selected', x === c));
-      const sp = window.Tree.get(T.tree), b = boostOf(T.tree);
-      $('#tree-hint').textContent = b ? `${sp.name}: ${pct(b)} coins` : sp.name;
+      $('#tree-hint').textContent = window.Tree.get(T.tree).name;
       $('#tree-hint').classList.remove('warn');
       previewTree();
     }));
-    const sp = window.Tree.get(T.tree), b = boostOf(T.tree);
-    $('#tree-hint').textContent = b ? `${sp.name}: ${pct(b)} coins` : 'Last session\'s tree is picked for you';
+    $('#tree-hint').textContent = 'Last session\'s tree is picked for you';
     $('#tree-hint').classList.remove('warn');
   }
   // while idle, show the chosen tree as a seedling preview in the stage
@@ -2412,7 +2408,7 @@
       return `<div class="col-card${n ? '' : ' locked'}${D.selectedTree === sp.id ? ' selected' : ''}" style="--rc:${r.color};--i:${i}" data-t="${sp.id}">
         <div class="col-img">${staticTree(sp.id, 3 * 3600, false, 'col' + sp.id)}${n ? '' : '<span class="lock">?</span>'}</div>${n ? starHtml(sp.id) : ''}${sellable(sp.id) ? `<button class="sell-btn" data-sell="${sp.id}" title="Sell for ${sellPrice(sp.id)} coins each"><span class="coin sm"></span>Sell</button>` : ''}
         <div class="col-name">${esc(sp.name)}</div>
-        <div class="col-meta"><span class="rar">${r.name}</span>${r.boost ? `<span class="boost">${pct(r.boost)} coins</span>` : ''}${n > 1 ? `<span class="cnt">×${n}</span>` : ''}</div>
+        <div class="col-meta"><span class="rar">${r.name}</span>${n > 1 ? `<span class="cnt">×${n}</span>` : ''}</div>
       </div>`;
     }).join('');
     paintTrees($('#collection'));
@@ -2670,7 +2666,7 @@
       $('#co-result').innerHTML = `<div class="cr-card" style="--rc:${r.color}">
         <div class="cr-tree" id="cr-tree">${window.Tree.build(won, 'cr')}</div>
         <div class="cr-rar">${r.name}</div><div class="cr-name">${esc(sp.name)}</div>
-        <div class="cr-info">${isNew ? (r.boost ? `Earns ${pct(r.boost)} coins while you study with it` : 'Added to your collection') : `You already have this one. <b>+${r.refund}</b> coins back`}</div></div>`;
+        <div class="cr-info">${isNew ? 'Added to your collection' : `You already have this one. <b>+${r.refund}</b> coins back`}</div></div>`;
       const t = $('#cr-tree .tree');
       $('#cr-tree').classList.add('alive');
       window.Tree.setGrowth(t, 0, 0);
@@ -3397,7 +3393,7 @@
   const TOUR = [
     { sel: null, title: 'Welcome to Study Tracker', text: 'Here\'s a quick tour of how it works. It takes about 30 seconds.' },
     { sel: '#subject-chips', title: 'Pick a subject', text: 'Choose what you\'re about to study. You need a subject before you can start.' },
-    { sel: '#tree-chips', title: 'Pick a tree', text: 'Choose which tree to grow. Your last session\'s tree is picked for you. Rare trees earn bonus coins.' },
+    { sel: '#tree-chips', title: 'Pick a tree', text: 'Choose which tree to grow. Your last session\'s tree is picked for you.' },
     { sel: '.controls', title: 'Start the stopwatch', text: 'Start and pause as you need. Stop saves the session. Cancel throws it away. The space bar also starts and pauses.' },
     { sel: '.tree-card', title: 'Your forest and your tree', text: 'Before you start, this shows your forest for the week. Each session plants one tree. Hover over one to see its session, and use the arrows to see earlier weeks. Once you start, your new tree grows here and takes root at 10 minutes. When you finish and save, you get 1 coin for every minute plus a 5 coin bonus for each full hour. Cancel and you get no coins, and before 10 minutes the tree dies.' },
     { sel: '#nav-more', title: 'More tabs', text: 'At first only the Timer tab shows, to keep things simple. Press this arrow to open all the other tabs, and press it again to tuck them away.' },

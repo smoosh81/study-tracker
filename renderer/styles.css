@@ -548,7 +548,6 @@ h3 { font-size: 15px; font-weight: 650; }
 .tc-img { width: 46px; height: 50px; }
 .tc-img .tree { width: 100%; height: 100%; }
 .tc-name { font-size: 11px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 76px; }
-.tc-boost { position: absolute; top: 4px; left: 5px; font-size: 9.5px; font-weight: 800; color: var(--rc); }
 .tree-strip.shake, .chips.shake { animation: shake .45s; }
 
 /* week strip */
