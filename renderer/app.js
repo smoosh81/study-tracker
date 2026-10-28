@@ -2331,12 +2331,20 @@
     { id: 'grove', name: 'Grove Chest', price: 400, color: '#fbbf24', odds: { uncommon: 30, rare: 39, epic: 22, legendary: 8, mythical: 1 } },
     { id: 'vault', name: 'Mythic Vault', price: 1000, color: '#ff4d8d', odds: { epic: 50, legendary: 38, mythical: 12 } },
   ];
+  // Fair random whole number from 0 to n-1, drawn fresh from the operating system's
+  // random source (the same one used for passwords), so no roll depends on the last one or on the time.
+  // Numbers past the last full multiple of n are thrown away so every result is exactly as likely.
+  function randInt(n) {
+    const buf = new Uint32Array(1), lim = 0x100000000 - (0x100000000 % n);
+    do crypto.getRandomValues(buf); while (buf[0] >= lim);
+    return buf[0] % n;
+  }
   function rollCase(c) {
     const entries = Object.entries(c.odds);
-    let r = Math.random() * entries.reduce((a, [, w]) => a + w, 0), rarity = entries[0][0];
+    let r = randInt(entries.reduce((a, [, w]) => a + w, 0)), rarity = entries[0][0];
     for (const [k, w] of entries) { if ((r -= w) < 0) { rarity = k; break; } }
     const pool = window.Tree.SPECIES.filter((x) => x.rarity === rarity);
-    return pool[Math.floor(Math.random() * pool.length)].id;
+    return pool[randInt(pool.length)].id;
   }
   function renderTrees() {
     const all = window.Tree.SPECIES;
