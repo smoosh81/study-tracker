@@ -1143,9 +1143,20 @@
     return n;
   }
   function updateTodayHeader() {
-    // only saved sessions count; the one running now is added when it's finished
-    const tot = todaySessions().reduce((a, s) => a + s.duration, 0);
-    $('#today-total').textContent = fmtDur(tot);
+    // saved sessions plus the one running now, so it ticks up with the timer.
+    // Display only: a cancelled session drops back out, and rewards still use saved time.
+    let tot = todaySessions().reduce((a, s) => a + s.duration, 0);
+    const live = !!D.active && T.state !== 'idle';
+    if (live) {
+      const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+      tot += Math.max(0, Math.min(elapsedSec(), (Date.now() - midnight.getTime()) / 1000));
+    }
+    const el = $('#today-total'), txt = fmtDur(tot);
+    if (el.textContent !== txt) {
+      el.textContent = txt;
+      if (live) { el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); }
+    }
+    el.closest('.mini-stat').classList.toggle('live', live && T.state === 'running');
   }
   function sessRow(s, i, opts = {}) {
     const d = new Date(s.date), end = new Date(d.getTime() + s.duration * 1000);
@@ -1809,26 +1820,37 @@
   }
   // The time of day you usually study: an average of the clock time of every minute studied in the
   // last 30 days (worked out on a circle, so 11 pm and 1 am average to midnight, not midday).
+  // when you study: minutes in each half-hour slot of the day over the last 30 days.
+  // The headline is the mode: the 30-minute slot with the most study time in it.
   function studyTimes(sub) {
     const since = Date.now() - 30 * 864e5;
-    const bins = new Array(24).fill(0);
+    const bins = new Array(48).fill(0);
     let x = 0, y = 0, total = 0;
     statSessions().filter((s) => counted(s) && s.duration > 0 && (!sub || s.subject === sub) && new Date(s.date).getTime() >= since).forEach((s) => {
       const t0 = new Date(s.date);
       let m = t0.getHours() * 60 + t0.getMinutes() + t0.getSeconds() / 60;
       for (let left = s.duration / 60; left > 0; left -= 1, m += 1) {
         const w = Math.min(1, left), mod = ((m % 1440) + 1440) % 1440, ang = (mod / 1440) * 2 * Math.PI;
-        bins[Math.floor(mod / 60)] += w; x += Math.cos(ang) * w; y += Math.sin(ang) * w; total += w;
+        bins[Math.floor(mod / 30)] += w; x += Math.cos(ang) * w; y += Math.sin(ang) * w; total += w;
       }
     });
     if (!total) return null;
-    let mean = (Math.atan2(y, x) / (2 * Math.PI)) * 1440;
-    if (mean < 0) mean += 1440;
     const spread = Math.hypot(x, y) / total; // 1 = always the same time, 0 = all over the clock
-    // the busiest three hours in a row
-    let best = 0, bestAt = 0;
-    for (let h = 0; h < 24; h++) { const v = bins[h] + bins[(h + 1) % 24] + bins[(h + 2) % 24]; if (v > best) { best = v; bestAt = h; } }
-    return { mean, bins, total, spread, peak: bestAt, peakShare: best / total };
+    // the most common slot; a tie goes to the slot with busier neighbours, then the earlier one
+    const near = (i) => bins[(i + 47) % 48] + bins[(i + 1) % 48];
+    let mode = 0;
+    for (let i = 1; i < 48; i++) {
+      const d = bins[i] - bins[mode];
+      if (d > 0.01 || (Math.abs(d) <= 0.01 && near(i) > near(mode) + 0.01)) mode = i;
+    }
+    // the busiest three hours in a row; a tie goes to the one centred closest to the top slot
+    let best = -1, bestAt = 0;
+    const off = (i) => { const d = Math.abs(((i + 3) % 48) - (mode + 0.5)); return Math.min(d, 48 - d); };
+    for (let i = 0; i < 48; i++) {
+      let v = 0; for (let k = 0; k < 6; k++) v += bins[(i + k) % 48];
+      if (v > best + 0.01 || (Math.abs(v - best) <= 0.01 && off(i) < off(bestAt))) { best = Math.max(v, best); bestAt = i; }
+    }
+    return { mode, modeMin: bins[mode], bins, total, spread, peak: bestAt, peakShare: best / total };
   }
   const clockLabel = (min) => { const d = new Date(2000, 0, 1, 0, Math.round(min) % 1440); return fmtTime(d); };
   const hourLabel = (h) => new Date(2000, 0, 1, h % 24).toLocaleTimeString([], { hour: 'numeric' });
@@ -1837,28 +1859,28 @@
     if (!host) return;
     const r = studyTimes(sub);
     if (!r) { host.innerHTML = `<div class="empty">${VW ? `Once ${who()} studies ${sub ? esc(sub) + ' ' : ''}a few times this month, their usual time shows up here.` : sub ? `Study ${esc(sub)} a few times this month and your usual time for it shows up here.` : 'Study a few sessions this month and your usual study time shows up here.'}</div>`; return; }
-    const mean = Math.round(r.mean / 5) * 5;
+    const start = r.mode * 30, end = start + 30;
     const max = Math.max(...r.bins);
     const R0 = 46, R1 = 92;
-    const wedge = (h) => {
-      const v = r.bins[h] / max, rr = R0 + (R1 - R0) * Math.max(0.06, v);
-      const a0 = ((h / 24) * 360 - 90) * Math.PI / 180, a1 = (((h + 1) / 24) * 360 - 90) * Math.PI / 180, g = 0.012;
+    const wedge = (i) => {
+      const v = r.bins[i] / max, rr = R0 + (R1 - R0) * Math.max(0.06, v);
+      const a0 = ((i / 48) * 360 - 90) * Math.PI / 180, a1 = (((i + 1) / 48) * 360 - 90) * Math.PI / 180, g = 0.008;
       const p = (rad, a) => `${(110 + rad * Math.cos(a)).toFixed(1)},${(110 + rad * Math.sin(a)).toFixed(1)}`;
-      return `<path class="sc-w${r.bins[h] ? '' : ' none'}" style="--i:${h};--o:${(0.25 + 0.75 * v).toFixed(2)}" d="M${p(R0, a0 + g)} L${p(rr, a0 + g)} A${rr} ${rr} 0 0 1 ${p(rr, a1 - g)} L${p(R0, a1 - g)} A${R0} ${R0} 0 0 0 ${p(R0, a0 + g)}Z"><title>${hourLabel(h)}: ${fmtDur(r.bins[h] * 60)}</title></path>`;
+      return `<path class="sc-w${r.bins[i] ? '' : ' none'}${i === r.mode ? ' top' : ''}" style="--i:${i / 2};--o:${(0.25 + 0.75 * v).toFixed(2)}" d="M${p(R0, a0 + g)} L${p(rr, a0 + g)} A${rr} ${rr} 0 0 1 ${p(rr, a1 - g)} L${p(R0, a1 - g)} A${R0} ${R0} 0 0 0 ${p(R0, a0 + g)}Z"><title>${esc(clockLabel(i * 30))} to ${esc(clockLabel(i * 30 + 30))}: ${fmtDur(r.bins[i] * 60)}</title></path>`;
     };
     const ticks = [0, 6, 12, 18].map((h) => { const a = ((h / 24) * 360 - 90) * Math.PI / 180; return `<text x="${(110 + 104 * Math.cos(a)).toFixed(1)}" y="${(110 + 104 * Math.sin(a) + 4).toFixed(1)}">${h === 0 ? '12am' : h === 12 ? '12pm' : hourLabel(h).replace(/\s/g, '').toLowerCase()}</text>`; }).join('');
-    const deg = (mean / 1440) * 360;
+    const deg = ((start + 15) / 1440) * 360;
     const part = (m) => (m < 300 ? 'late at night' : m < 720 ? 'in the morning' : m < 1020 ? 'in the afternoon' : m < 1260 ? 'in the evening' : 'at night');
     host.innerHTML = `<svg class="sc-dial" viewBox="0 0 220 220">
-        <circle cx="110" cy="110" r="${R1}" class="sc-ring"/>${Array.from({ length: 24 }, (_, h) => wedge(h)).join('')}${ticks}
+        <circle cx="110" cy="110" r="${R1}" class="sc-ring"/>${Array.from({ length: 48 }, (_, i) => wedge(i)).join('')}${ticks}
         <g class="sc-needle" style="--deg:${deg.toFixed(1)}deg"><line x1="110" y1="110" x2="110" y2="${110 - R1 - 4}"/><circle cx="110" cy="${110 - R1 - 4}" r="5"/></g>
-        <circle cx="110" cy="110" r="${R0 - 8}" class="sc-hub"/><text x="110" y="107" class="sc-hub-t">${esc(clockLabel(mean))}</text><text x="110" y="122" class="sc-hub-s">average</text>
+        <circle cx="110" cy="110" r="${R0 - 8}" class="sc-hub"/><text x="110" y="107" class="sc-hub-t">${esc(clockLabel(start))}</text><text x="110" y="122" class="sc-hub-s">most often</text>
       </svg>
       <div class="sc-text">
-        <div class="sc-big">${who()} usually stud${VW ? 'ies' : 'y'}${sub ? ` <span class="sc-sub">${esc(sub)}</span>` : ''} around <b>${esc(clockLabel(mean))}</b></div>
-        <p class="muted">That's ${part(mean)}, worked out from ${fmtDur(r.total * 60)} of ${sub ? esc(sub) : 'study'} in the last 30 days.</p>
+        <div class="sc-big">${who()} stud${VW ? 'ies' : 'y'}${sub ? ` <span class="sc-sub">${esc(sub)}</span>` : ''} most between <b>${esc(clockLabel(start))}</b> and <b>${esc(clockLabel(end))}</b></div>
+        <p class="muted">That's ${part(start + 15)}. ${fmtDur(r.modeMin * 60)} of ${sub ? esc(sub) : 'study'} fell in that half hour, more than any other, out of ${fmtDur(r.total * 60)} in the last 30 days.</p>
         <div class="sc-rows">
-          <div><span>Busiest stretch</span><b>${esc(hourLabel(r.peak))} to ${esc(hourLabel(r.peak + 3))}</b><small>${Math.round(r.peakShare * 100)}% of ${sub ? 'this subject\'s' : VW ? 'their' : 'your'} time</small></div>
+          <div><span>Busiest stretch</span><b>${esc(clockLabel(r.peak * 30))} to ${esc(clockLabel(r.peak * 30 + 180))}</b><small>${Math.round(r.peakShare * 100)}% of ${sub ? 'this subject\'s' : VW ? 'their' : 'your'} time</small></div>
           <div><span>How regular</span><b>${r.spread > 0.8 ? 'Very steady' : r.spread > 0.55 ? 'Fairly steady' : r.spread > 0.3 ? 'Mixed' : 'All over the clock'}</b><small>${r.spread > 0.55 ? 'Mostly the same time of day' : VW ? 'Their study times vary a lot' : 'Your study times vary a lot'}</small></div>
         </div>
       </div>`;

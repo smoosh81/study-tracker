@@ -207,7 +207,13 @@
     if (x.type === 'gift' && x.kind === 'case' && BOXES.includes(x.box)) return { ...base, type: 'gift', kind: 'case', box: x.box };
     return null;
   }
-  const call = (op, args) => window.api.social(op, args);
+  // every answer says how far this PC's clock is from the server's (F.skew), and all the
+  // online / studying times are compared on the server's clock, so they line up between PCs
+  const call = (op, args) => window.api.social(op, args).then((r) => {
+    if (r && r.ok && Number.isFinite(r.skew) && Math.abs(r.skew) < 2 * 864e5) F.skew = r.skew;
+    return r;
+  });
+  const now = () => Date.now() + (F.skew || 0);
   const myName = () => cleanName(D().profile.name).name;
   const S = () => D().social;
 
@@ -263,7 +269,7 @@
   function liveNow() {
     const a = D().active;
     if (!a) return null;
-    return { s: a.subject, c: C.colorOf(a.subject), e: Math.floor(C.elapsedSec()), t: new Date().toISOString(), p: a.segStart ? 0 : 1, tr: a.species || 'oak' };
+    return { s: a.subject, c: C.colorOf(a.subject), e: Math.floor(C.elapsedSec()), t: new Date(now()).toISOString(), p: a.segStart ? 0 : 1, tr: a.species || 'oak' };
   }
   // up to 3 earned badges picked to show next to my name
   const myShowcase = () => (Array.isArray(S().showcase) ? S().showcase : []).filter((id) => D().achievements[id]).slice(0, 3);
@@ -419,7 +425,7 @@
     bgTimer = setInterval(() => { refresh({ notify: true }); }, 6 * 60 * 1000);
     // tell friends I'm online every 2 minutes (skipped when a full update just went out)
     clearInterval(pingTimer);
-    pingTimer = setInterval(() => { if (!C.readOnly() && !F.banned && Date.now() - lastPub > 100000) call('ping'); }, 2 * 60 * 1000);
+    pingTimer = setInterval(() => { if (!C.readOnly() && !F.banned && Date.now() - lastPub > 60000) call('ping'); }, 2 * 60 * 1000);
     // while friends are on screen, keep them fresh: their profiles every 30 seconds, and
     // everything (requests, gifts, streaks) every 3 minutes
     clearInterval(fastTimer);
@@ -438,6 +444,9 @@
   }
   function tickLive() {
     if (document.hidden || C.currentPage() !== 'friends') return;
+    // someone went quiet (or their session stopped counting) since the last update: redraw
+    // the statuses so the dot and the "studying" line change together
+    if (F.friends.some((f) => f.mutual && f.shownPres && presence(f).k !== f.shownPres)) return paint();
     $$('[data-live]').forEach((el) => {
       const f = F.friends.find((x) => x.uid === el.dataset.live);
       const lv = f && liveOf(f);
@@ -450,14 +459,18 @@
   // counts as live while they're online, so if their app closes mid-session it stops counting,
   // and a cancelled session simply disappears: live time is never added to their saved days.
   const ONLINE_MS = 5 * 60 * 1000;
+  // online and studying both come from this, so the dot and the status never disagree
+  function online(f) {
+    const seen = f && f.updated ? Date.parse(f.updated) : 0;
+    return !!seen && now() - seen < ONLINE_MS;
+  }
   function liveOf(f) {
     const lv = f && f.info && f.info.live;
-    const seen = f && f.updated ? Date.parse(f.updated) : 0;
-    if (!lv || !seen || Date.now() - seen >= ONLINE_MS) return null;
-    const since = Date.parse(lv.t || f.updated);
-    // a start time from the future is nonsense (or a clock that's way off): ignore it
-    if (Number.isFinite(since) && since > Date.now() + 10 * 60000) return null;
-    const run = lv.p || !Number.isFinite(since) ? 0 : Math.max(0, (Date.now() - since) / 1000);
+    if (!lv || !online(f)) return null;
+    // a time from the future is a clock that's off (older versions use the PC's own clock):
+    // still show what they're studying, just without adding time on top of what they sent
+    const since = Math.min(Date.parse(lv.t || f.updated), now());
+    const run = lv.p || !Number.isFinite(since) ? 0 : Math.max(0, (now() - since) / 1000);
     return { s: lv.s || 'something', c: lv.c, sec: Math.min((lv.e || 0) + run, 16 * 3600), paused: !!lv.p, tr: lv.tr };
   }
   const liveSec = (f) => { const l = liveOf(f); return l ? l.sec : 0; };
@@ -481,11 +494,10 @@
   const liveText = (l) => `${liveMin(l.sec)} of ${String(l.s).slice(0, 40)}`;
   function presence(f) {
     const seen = f.updated ? Date.parse(f.updated) : 0;
-    const online = seen && Date.now() - seen < ONLINE_MS;
     const l = liveOf(f);
     if (l && !l.paused) return { k: 'studying', rank: 0, t: 'Studying', long: liveText(l), c: l.c };
     if (l) return { k: 'break', rank: 1, t: 'On a break', long: liveText(l), c: l.c };
-    if (online) return { k: 'online', rank: 2, t: 'Online' };
+    if (online(f)) return { k: 'online', rank: 2, t: 'Online' };
     return { k: 'off', rank: 3, t: seen ? `Offline · last on ${ago(f.updated)}` : 'Offline' };
   }
   // the status line, with the live part kept up to date by tickLive
@@ -796,6 +808,7 @@
     // when the loading skeletons are swapped for real friend cards, those cards still pop in
     const skel = !!host.querySelector('.skel');
     if (fresh) paintedAt = performance.now();
+    F.friends.forEach((f) => { f.shownPres = presence(f).k; });
     paintInner(host, fresh);
     if (!fresh) settle(host, skel ? '.fr-card' : null);
   }
@@ -1092,7 +1105,7 @@
     paintTab(f, fresh ? 0 : null);
   }
   function ago(iso) {
-    const s = (Date.now() - new Date(iso)) / 1000;
+    const s = (now() - new Date(iso)) / 1000;
     if (!(s >= 0)) return 'recently';
     if (s < 120) return 'just now';
     if (s < 3600) return `${Math.round(s / 60)} min ago`;

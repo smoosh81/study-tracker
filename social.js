@@ -186,6 +186,7 @@ async function batchGet(paths, auth = authed, fields) {
   // keyed by the path asked for, e.g. out['profiles/abc']
   const rel = (name) => String(name).split('/documents/').slice(1).join('/documents/');
   (Array.isArray(r) ? r : []).forEach((x) => {
+    if (x.readTime) learnClock({ commitTime: x.readTime });
     if (x.found) out[rel(x.found.name)] = fromFields(x.found.fields);
     else if (x.missing) out[rel(x.missing)] = null;
   });
@@ -230,6 +231,7 @@ async function adminAuthed(method, url, body) {
 }
 
 // ---------- operations ----------
+let lastLive = ''; // the live status friends can see right now
 let oldRules = false; // the server rules are older than 1.18 (no live/wk fields yet)
 let boardLast = null; // my last leaderboard entry: { week, sec, name, pic, at } (server time)
 let myProfile = null; // last copy of profiles/{me}
@@ -287,7 +289,9 @@ const ops = {
   async publish({ name, data, grades, live, wk }) {
     const p = await ensureProfile(name);
     const uid = account.uid;
-    const fields = { name: name || '', data: data || '', live: live || '', wk: wk || '', updated: new Date().toISOString() };
+    // times friends compare against are the server's clock, so a PC clock that's a few minutes
+    // off doesn't make me look offline (or studying in the future) to them
+    const fields = { name: name || '', data: data || '', live: live || '', wk: wk || '', updated: new Date(serverNow()).toISOString() };
     const writes = [];
     // grades are only on the server while sharing is switched on
     if (grades) fields.grades = grades;
@@ -304,13 +308,22 @@ const ops = {
     }
     Object.assign(myProfile, fields);
     if (!grades) delete myProfile.grades;
+    lastLive = fields.live || '';
     return { uid, code: p.code, friends: p.friends || [] };
+  },
+  // the app is closing: stop showing friends a session that isn't running any more
+  async bye() {
+    loadAccount();
+    if (!account.uid || !account.code || !lastLive || oldRules) return false;
+    await commit([updateWrite(`profiles/${account.uid}`, { live: '' }, { merge: true, exists: true })]);
+    lastLive = '';
+    return true;
   },
   // "I'm online": only bumps the profile's updated time (one small write every couple of minutes)
   async ping() {
     loadAccount();
     if (!account.uid || !account.code) return false;
-    await commit([updateWrite(`profiles/${account.uid}`, { updated: new Date().toISOString() }, { merge: true, exists: true })]);
+    await commit([updateWrite(`profiles/${account.uid}`, { updated: new Date(serverNow()).toISOString() }, { merge: true, exists: true })]);
     return true;
   },
   // everything the Friends page needs in one go
@@ -625,7 +638,9 @@ async function call(op, args) {
   if (typeof op !== 'string' || !Object.prototype.hasOwnProperty.call(ops, op)) return { ok: false, error: 'unknown' };
   try {
     const a = args && typeof args === 'object' && !Array.isArray(args) ? { ...args } : {};
-    return { ok: true, value: await ops[op](checkArgs(op, a)) };
+    const value = await ops[op](checkArgs(op, a));
+    // how far this PC's clock is from the server's, so the app can line friends' times up
+    return { ok: true, value, skew: clockSkew };
   } catch (e) {
     return { ok: false, error: e.message || String(e), status: e.status || 0, offline: !!e.offline };
   }
