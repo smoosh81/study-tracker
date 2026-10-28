@@ -3,12 +3,12 @@
 //         g = 0..1 covers 10 -> 180 minutes (the tree keeps getting bigger and grows fruit).
 (function () {
   const RARITIES = {
-    common:    { name: 'Common',    color: '#9ca3af', boost: 0,    refund: 15 },
-    uncommon:  { name: 'Uncommon',  color: '#4ade80', boost: 0,    refund: 35 },
-    rare:      { name: 'Rare',      color: '#38bdf8', boost: 0.05, refund: 80 },
-    epic:      { name: 'Epic',      color: '#c084fc', boost: 0.10, refund: 180 },
-    legendary: { name: 'Legendary', color: '#fbbf24', boost: 0.20, refund: 450 },
-    mythical:  { name: 'Mythical',  color: '#ff4d8d', boost: 0.35, refund: 1200 },
+    common:    { name: 'Common',    color: '#9ca3af', refund: 15 },
+    uncommon:  { name: 'Uncommon',  color: '#4ade80', refund: 35 },
+    rare:      { name: 'Rare',      color: '#38bdf8', refund: 80 },
+    epic:      { name: 'Epic',      color: '#c084fc', refund: 180 },
+    legendary: { name: 'Legendary', color: '#fbbf24', refund: 450 },
+    mythical:  { name: 'Mythical',  color: '#ff4d8d', refund: 1200 },
   };
   const RARITY_ORDER = ['common', 'uncommon', 'rare', 'epic', 'legendary', 'mythical'];
 

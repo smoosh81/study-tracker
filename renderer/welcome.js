@@ -344,7 +344,7 @@
         t.addEventListener('mouseenter', () => {
           tip.innerHTML = isFar
             ? (sp.rarity === 'mythical' ? '<b>Something glows on the far hill…</b><span>Click to take a closer look</span>' : '<b>A faint shape in the distance</b><span>Click to take a closer look</span>')
-            : `<b>${esc(sp.name)}</b><span style="color:${rr.color}">${rr.name}${rr.boost ? ` · +${Math.round(rr.boost * 100)}% coins` : ''}</span><span>${owned(sp.id) ? 'In your collection' : 'Unlock it from a case'}</span>`;
+            : `<b>${esc(sp.name)}</b><span style="color:${rr.color}">${rr.name}</span><span>${owned(sp.id) ? 'In your collection' : 'Unlock it from a case'}</span>`;
           tip.classList.add('show');
         });
         t.addEventListener('mousemove', (e) => { tip.style.left = `${e.clientX + 16}px`; tip.style.top = `${e.clientY - 12}px`; });
@@ -371,7 +371,7 @@
         tip.classList.remove('show');
         const rr = RAR[sp.rarity];
         const cap = $('#wl-caption', root);
-        cap.innerHTML = `<span class="r" style="color:${rr.color}">${rr.name}</span><b>${esc(sp.name)}</b><span>${sp.rarity === 'mythical' ? 'Found in a Grove Chest (1%) or a Mythic Vault (12%). It earns +35% coins.' : `A legendary tree. Find one in a Grove Chest or a Mythic Vault. It earns +${Math.round(rr.boost * 100)}% coins.`}</span>${owned(sp.id) ? '<em>You own this one ✨</em>' : ''}`;
+        cap.innerHTML = `<span class="r" style="color:${rr.color}">${rr.name}</span><b>${esc(sp.name)}</b><span>${sp.rarity === 'mythical' ? 'Found in a Grove Chest (1%) or a Mythic Vault (12%).' : 'A legendary tree. Find one in a Grove Chest or a Mythic Vault.'}</span>${owned(sp.id) ? '<em>You own this one ✨</em>' : ''}`;
         cap.classList.add('show');
         setTimeout(() => sparkle(innerWidth / 2, innerHeight * 0.6 - b.height * 1.2, sp.rarity === 'mythical' ? ['#f0abfc', '#818cf8', '#fde68a', '#a5f3fc'] : [rr.color, '#ffffff'], 60, 6), 700);
         setTimeout(() => { root.classList.remove('focus'); scene.style.transform = ''; cap.classList.remove('show'); setTimeout(() => { focused = false; }, 1500); }, 4200);
