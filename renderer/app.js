@@ -72,7 +72,7 @@
   // ---------------- data ----------------
   // SCHEMA is the save-file format version. Bump it and add a migration below whenever
   // the save format changes, so older saves are always upgraded instead of lost.
-  const SCHEMA = 15;
+  const SCHEMA = 16;
   const MIGRATIONS = {
     // 1 -> 2 (app 1.0.1): subjects can be archived; coins are counted per 10-minute milestone
     1: (d) => {
@@ -205,6 +205,16 @@
       if (!d.handback || typeof d.handback !== 'object') d.handback = { left: 3, used: [] };
       return 'One-time offer to hand back up to 3 trees from old chests';
     },
+    // 15 -> 16 (app 1.19.3): one extra chest hand-back for everyone who had the offer.
+    // Only changes d.handback.left; nothing else in the save is touched.
+    15: (d) => {
+      const h = d.handback;
+      if (h && typeof h === 'object' && ((Number.isInteger(h.left) && h.left > 0) || (Array.isArray(h.used) && h.used.length))) {
+        h.left = (Number.isInteger(h.left) ? Math.max(0, h.left) : 0) + 1;
+        return 'One more chest hand-back';
+      }
+      return 'No chest hand-back to add';
+    },
   };
   // shareGrades: off by default. claims: streak/task rewards taken. gifts: gift ids opened.
   // giftLog: coins given away today. names: names of people you've sent requests to.
@@ -293,7 +303,7 @@
     out.social.showcase = Array.isArray(out.social.showcase) ? out.social.showcase.filter((id) => typeof id === 'string').slice(0, 3) : [];
     out.freeCases = obj(x.freeCases) ? x.freeCases : {};
     out.handback = {
-      left: obj(x.handback) && Number.isInteger(x.handback.left) ? Math.max(0, Math.min(3, x.handback.left)) : 0,
+      left: obj(x.handback) && Number.isInteger(x.handback.left) ? Math.max(0, Math.min(4, x.handback.left)) : 0,
       used: obj(x.handback) && Array.isArray(x.handback.used) ? x.handback.used.filter((e) => e && typeof e === 'object') : [],
     };
     out.gradeExtras = obj(x.gradeExtras) ? x.gradeExtras : {};
