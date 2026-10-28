@@ -1398,3 +1398,21 @@ body.is-night .plot .tile.drop { fill: #efe08a; }
 .hb-get { display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .hb-get b { display: inline-flex; align-items: center; gap: 5px; font-size: 16px; }
 .hb-get small { color: var(--muted); font-size: 12px; }
+
+/* selling trees (1.20.0) */
+.col-card .sell-btn { position: absolute; top: 8px; left: 8px; z-index: 2; display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 11px; font-weight: 700; color: #b45309; background: color-mix(in srgb, #fbbf24 22%, var(--surface)); border: 1px solid color-mix(in srgb, #fbbf24 45%, transparent); border-radius: 999px; padding: 3px 8px 3px 5px; cursor: pointer; opacity: 0; transform: translateY(-4px) scale(.9); transition: opacity .25s, transform .35s var(--spring), box-shadow .25s; }
+.col-card .sell-btn .coin.sm { width: 12px; height: 12px; }
+.col-card:hover .sell-btn { opacity: 1; transform: none; }
+.col-card .sell-btn:hover { transform: scale(1.08); box-shadow: 0 6px 14px -8px #f59e0b; }
+.sell-modal { width: min(460px, 94vw); }
+.sell-modal .sl-each { display: inline-flex; align-items: center; gap: 4px; color: var(--text); }
+.sl-step { display: flex; align-items: center; gap: 10px; }
+.sl-step .btn { width: 38px; height: 38px; padding: 0; font-size: 20px; justify-content: center; }
+.sl-n { min-width: 36px; font-family: var(--font-display); font-size: 26px; font-weight: 700; }
+.sl-n.tick { animation: slTick .35s var(--spring); }
+@keyframes slTick { 40% { transform: scale(1.35); } }
+.sl-max { font: inherit; font-size: 12px; font-weight: 600; color: var(--muted); background: var(--surface2); border: 0; border-radius: 999px; padding: 6px 10px; cursor: pointer; transition: color .2s, background .2s; }
+.sl-max:hover { color: var(--text); }
+.sl-notes { display: flex; flex-direction: column; gap: 2px; }
+.sell-modal .m-tree.sold { animation: slSold .5s var(--ease) forwards; }
+@keyframes slSold { 30% { transform: scale(1.08) rotate(-3deg); } to { transform: scale(.4) translateY(30px); opacity: 0; } }

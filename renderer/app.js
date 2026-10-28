@@ -241,7 +241,7 @@
       version: SCHEMA,
       migrationLog: [],
       profile: { name: '', setupDone: false, theme: 'forest', autoMini: false, tutorialSeen: false, welcome: true, notesSeen: '' },
-      collection: { owned: { oak: 1, pine: 1 }, opened: 0, log: [] },
+      collection: { owned: { oak: 1, pine: 1 }, opened: 0, log: [], sold: [] },
       selectedTree: 'oak',
       favTrees: [],
       achievements: {},
@@ -279,6 +279,8 @@
     out.collection.owned = Object.assign({ oak: 1, pine: 1 }, out.collection.owned || {});
     // collection.log: every case opened since 1.19.2, newest last { at, box, tree, paid, back }
     out.collection.log = Array.isArray(out.collection.log) ? out.collection.log.filter((e) => e && typeof e.tree === 'string').slice(-300) : [];
+    // collection.sold: trees sold since 1.20.0, newest last { at, tree, n, coins }
+    out.collection.sold = Array.isArray(out.collection.sold) ? out.collection.sold.filter((e) => e && typeof e.tree === 'string').slice(-300) : [];
     if (!out.collection.owned[out.selectedTree]) out.selectedTree = 'oak';
     out.achievements = x.achievements && typeof x.achievements === 'object' && !Array.isArray(x.achievements) ? x.achievements : {};
     out.badgesSeeded = x.badgesSeeded !== false;
@@ -2408,7 +2410,7 @@
     $('#collection').innerHTML = sorted.map((sp, i) => {
       const r = window.Tree.RARITIES[sp.rarity], n = D.collection.owned[sp.id] || 0;
       return `<div class="col-card${n ? '' : ' locked'}${D.selectedTree === sp.id ? ' selected' : ''}" style="--rc:${r.color};--i:${i}" data-t="${sp.id}">
-        <div class="col-img">${staticTree(sp.id, 3 * 3600, false, 'col' + sp.id)}${n ? '' : '<span class="lock">?</span>'}</div>${n ? starHtml(sp.id) : ''}
+        <div class="col-img">${staticTree(sp.id, 3 * 3600, false, 'col' + sp.id)}${n ? '' : '<span class="lock">?</span>'}</div>${n ? starHtml(sp.id) : ''}${sellable(sp.id) ? `<button class="sell-btn" data-sell="${sp.id}" title="Sell for ${sellPrice(sp.id)} coins each"><span class="coin sm"></span>Sell</button>` : ''}
         <div class="col-name">${esc(sp.name)}</div>
         <div class="col-meta"><span class="rar">${r.name}</span>${r.boost ? `<span class="boost">${pct(r.boost)} coins</span>` : ''}${n > 1 ? `<span class="cnt">×${n}</span>` : ''}</div>
       </div>`;
@@ -2421,6 +2423,7 @@
       st.title = on ? 'Remove from favourites' : 'Favourite: keep at the front';
       toast(on ? `${esc(window.Tree.get(st.dataset.fav).name)} will show first when picking a tree` : `${esc(window.Tree.get(st.dataset.fav).name)} removed from favourites`);
     }));
+    $$('#collection .sell-btn').forEach((b) => b.addEventListener('click', (ev) => { ev.stopPropagation(); openSell(b.dataset.sell); }));
     $$('.col-card').forEach((c) => c.addEventListener('click', () => {
       if (c.classList.contains('locked')) { c.classList.remove('shake'); void c.offsetWidth; c.classList.add('shake'); return; }
       if (T.state !== 'idle') { toast('You can change trees once this session ends'); return; }
@@ -2521,6 +2524,97 @@
     D.handback.left -= 1;
     D.handback.used.push({ at: new Date().toISOString(), tree: id, box: c.id, free: !!free, coins: v.coins });
     save(true);
+  }
+  // ---------------- selling trees (1.20.0) ----------------
+  // A tree sells for 40% of the cheapest chest that can drop it, as a whole number.
+  // Starter oak/pine always keep one copy, and the tree growing in a running session keeps one.
+  // Only the collection and coins change; garden trees and study data are never touched.
+  const SELL_RATE = 0.4;
+  function sellPrice(id) {
+    const cheapest = Math.min(...casesFor(window.Tree.get(id).rarity).map((c) => c.price));
+    return Math.floor(cheapest * SELL_RATE);
+  }
+  function sellable(id) {
+    const keep = Math.max(STARTERS[id] || 0, T.state !== 'idle' && T.tree === id ? 1 : 0);
+    return Math.max(0, (D.collection.owned[id] || 0) - keep);
+  }
+  function openSell(id) {
+    const max = sellable(id);
+    if (!max) return;
+    const sp = window.Tree.get(id), r = window.Tree.RARITIES[sp.rarity], each = sellPrice(id);
+    const cheap = casesFor(sp.rarity).reduce((a, c) => (c.price < a.price ? c : a));
+    let n = 1;
+    const back = document.createElement('div');
+    back.className = 'modal-back';
+    back.innerHTML = '<div class="modal sell-modal"></div>';
+    const box = $('.modal', back);
+    const close = () => { back.classList.add('closing'); setTimeout(() => back.remove(), 260); document.removeEventListener('keydown', onKey); };
+    const onKey = (e) => { if (e.key === 'Escape') close(); else if (e.key === 'ArrowUp' || e.key === 'ArrowRight') step(1); else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') step(-1); };
+    document.addEventListener('keydown', onKey);
+    back.addEventListener('mousedown', (e) => { if (e.target === back) close(); });
+    const notes = () => {
+      const left = (D.collection.owned[id] || 0) - n, out = [];
+      if (STARTERS[id]) out.push(`${esc(sp.name)} is a starter tree, so you always keep one.`);
+      else if (!left) {
+        out.push('That\'s all of them, so it leaves your collection. You can still win it again from chests.');
+        if (isFav(id)) out.push('It also comes off your favourites.');
+        if (D.selectedTree === id) out.push('Your next session will grow an Oak instead.');
+      } else if (T.state !== 'idle' && T.tree === id && left === 1) out.push('You keep one because it\'s growing right now.');
+      return out.map((x) => `<small>${x}</small>`).join('');
+    };
+    const paint = () => {
+      $('.sl-n', box).textContent = n;
+      $('.sl-total b', box).innerHTML = `<span class="coin sm"></span>${(n * each).toLocaleString()}`;
+      $('.sl-notes', box).innerHTML = notes();
+      $('[data-d="-1"]', box).disabled = n <= 1;
+      $('[data-d="1"]', box).disabled = n >= max;
+      $('[data-a="go"]', box).textContent = n > 1 ? `Sell ${n}` : 'Sell';
+    };
+    const step = (d) => {
+      const v = Math.max(1, Math.min(max, n + d));
+      if (v === n) return;
+      n = v; paint();
+      const el = $('.sl-n', box); el.classList.remove('tick'); void el.offsetWidth; el.classList.add('tick');
+    };
+    const owned = D.collection.owned[id] || 0;
+    box.innerHTML = `<div class="hb-pick" style="--rc:${r.color}"><div class="m-tree">${staticTree(id, 3 * 3600, false, 'sell')}</div><div class="cr-rar">${r.name}</div><h2>Sell ${esc(sp.name)}?</h2></div>
+      <p>Sells for <b class="sl-each"><span class="coin sm"></span>${each}</b> each, 40% of a ${esc(cheap.name)}. You have ${owned}.</p>
+      ${max > 1 ? `<div class="sl-step"><button class="btn ghost" data-d="-1">−</button><span class="sl-n">1</span><button class="btn ghost" data-d="1">+</button><button class="sl-max" data-a="max">All ${max}</button></div>` : '<span class="sl-n hidden">1</span><button class="hidden" data-d="-1"></button><button class="hidden" data-d="1"></button>'}
+      <div class="hb-get sl-total">You get: <b></b><div class="sl-notes"></div></div>
+      <div class="m-actions"><button class="btn ghost" data-a="close">Keep it</button><button class="btn primary" data-a="go">Sell</button></div>`;
+    paintTrees(box);
+    $$('[data-d]', box).forEach((b) => b.addEventListener('click', () => step(+b.dataset.d)));
+    const mx = $('[data-a="max"]', box); if (mx) mx.addEventListener('click', () => step(max - n));
+    $('[data-a="close"]', box).addEventListener('click', close);
+    $('[data-a="go"]', box).addEventListener('click', () => {
+      const got = applySell(id, n);
+      if (!got) { close(); return; }
+      const t = $('.m-tree', box), rect = t.getBoundingClientRect();
+      burst(rect.left + rect.width / 2, rect.top + rect.height * 0.5, { n: 40, up: true, speed: 6, colors: [r.color, '#fde68a', '#ffffff', sp.leaf1] });
+      t.classList.add('sold');
+      flyCoins(t, Math.min(got, 40));
+      toast(`Sold ${n > 1 ? `${n} × ` : ''}${esc(sp.name)}. +${got.toLocaleString()} coins`);
+      setTimeout(() => { close(); renderTrees(); }, 520);
+    });
+    $('#modal-host').appendChild(back);
+    paint();
+    setTimeout(() => $('[data-a="go"]', box).focus(), 50);
+  }
+  function applySell(id, count) {
+    const n = Math.min(count, sellable(id));
+    if (n < 1) return 0;
+    const coins = n * sellPrice(id);
+    D.collection.owned[id] -= n;
+    if (!D.collection.owned[id]) {
+      delete D.collection.owned[id];
+      if (D.selectedTree === id) { D.selectedTree = 'oak'; if (T.state === 'idle') T.tree = 'oak'; }
+      D.favTrees = D.favTrees.filter((x) => x !== id);
+    }
+    D.coins += coins;
+    D.collection.sold.push({ at: new Date().toISOString(), tree: id, n, coins });
+    if (D.collection.sold.length > 300) D.collection.sold.splice(0, D.collection.sold.length - 300);
+    save(true);
+    return coins;
   }
   const REEL_W = 132;
   function openCase(c, free) {
