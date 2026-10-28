@@ -1371,3 +1371,30 @@ body.is-night .plot .tile.drop { fill: #efe08a; }
 @media (max-width: 980px) { .sj-share-wrap { flex-direction: column; align-items: stretch; } .sj-ring-box { align-self: center; } }
 /* let the hover nudges win once the entrance animation has played */
 .legend-row, .hbar.pick, .sj-mini-row, .sj-tile, #page-subject .sess-row { animation-fill-mode: backwards; }
+
+/* one-time chest hand-back (1.19.2) */
+#handback { margin-bottom: 16px; }
+.hb-banner { display: flex; align-items: center; gap: 14px; padding: 14px 18px; border-radius: var(--radius); background: linear-gradient(120deg, color-mix(in srgb, #fbbf24 16%, var(--surface)), var(--surface)); border: 1px solid color-mix(in srgb, #fbbf24 40%, var(--border)); animation: pop .55s var(--spring) both; }
+.hb-icon { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; background: color-mix(in srgb, #fbbf24 22%, transparent); flex: none; }
+.hb-icon .rw-box { --cc: #fbbf24; width: 22px; height: 18px; animation: rattle 2.4s ease-in-out infinite; }
+.hb-txt { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.hb-txt span { color: var(--muted); font-size: 13px; line-height: 1.4; }
+.hb-modal { width: min(640px, 94vw); max-height: 86vh; }
+.hb-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; width: 100%; overflow-y: auto; max-height: 52vh; padding: 4px; }
+.hb-tree { font: inherit; color: inherit; }
+.hb-tree:hover { border-color: var(--rc); }
+.hb-tree .col-img { width: 70px; height: 84px; }
+.hb-pick { display: flex; flex-direction: column; align-items: center; gap: 2px; animation: pop .45s var(--spring) both; }
+.hb-pick .cr-rar { color: var(--rc); font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+.hb-chests { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.hb-chest { font: inherit; color: inherit; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 14px; min-width: 112px; border-radius: 14px; background: var(--surface2); border: 2px solid transparent; cursor: pointer; transition: transform .3s var(--spring), border-color .25s, box-shadow .25s; }
+.hb-chest:hover { transform: translateY(-3px); }
+.hb-chest.on { border-color: var(--cc); box-shadow: 0 10px 22px -14px var(--cc); }
+.hb-chest.on .rw-box { animation: rattle .5s ease-in-out; }
+.hb-chest small { color: var(--muted); font-size: 11px; }
+.hb-how { display: flex; background: var(--surface2); border-radius: 999px; padding: 3px; gap: 3px; }
+.hb-seg { font: inherit; color: var(--muted); border: 0; background: transparent; padding: 7px 14px; border-radius: 999px; cursor: pointer; display: flex; align-items: center; gap: 6px; transition: background .25s, color .25s; }
+.hb-seg.on { background: var(--surface); color: var(--text); box-shadow: 0 2px 8px -4px rgba(0,0,0,.3); }
+.hb-get { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.hb-get b { display: inline-flex; align-items: center; gap: 5px; font-size: 16px; }
+.hb-get small { color: var(--muted); font-size: 12px; }
