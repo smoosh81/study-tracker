@@ -72,7 +72,7 @@
   // ---------------- data ----------------
   // SCHEMA is the save-file format version. Bump it and add a migration below whenever
   // the save format changes, so older saves are always upgraded instead of lost.
-  const SCHEMA = 14;
+  const SCHEMA = 15;
   const MIGRATIONS = {
     // 1 -> 2 (app 1.0.1): subjects can be archived; coins are counted per 10-minute milestone
     1: (d) => {
@@ -198,6 +198,13 @@
       if (d.social && typeof d.social === 'object' && !Array.isArray(d.social.showcase)) d.social.showcase = [];
       return 'Badges to show friends; coins paid when a session is saved; one tree per session';
     },
+    // 14 -> 15 (app 1.19.2): one-time chest hand-back. Chest results before 1.19.1 weren't logged,
+    // so everyone upgrading may hand back up to 3 trees from old chests for that chest's price.
+    // Only adds d.handback; sessions, subjects, grades and coins are not touched here.
+    14: (d) => {
+      if (!d.handback || typeof d.handback !== 'object') d.handback = { left: 3, used: [] };
+      return 'One-time offer to hand back up to 3 trees from old chests';
+    },
   };
   // shareGrades: off by default. claims: streak/task rewards taken. gifts: gift ids opened.
   // giftLog: coins given away today. names: names of people you've sent requests to.
@@ -234,6 +241,7 @@
       giftNotice: 'welcome',
       decor: {},
       gardenSpots: {},
+      handback: { left: 0, used: [] }, // one-time chest hand-back (only saves from before 1.19.2 get it)
       login: { last: '', days: 0 }, // daily reward: last day claimed and how many days so far // garden view ('*' = all trees) -> { item key: [row, col] } once the user has dragged something
       social: blankSocial(),
       gradeExtras: {},
@@ -284,6 +292,10 @@
     out.social.shareGrades = out.social.shareGrades === true;
     out.social.showcase = Array.isArray(out.social.showcase) ? out.social.showcase.filter((id) => typeof id === 'string').slice(0, 3) : [];
     out.freeCases = obj(x.freeCases) ? x.freeCases : {};
+    out.handback = {
+      left: obj(x.handback) && Number.isInteger(x.handback.left) ? Math.max(0, Math.min(3, x.handback.left)) : 0,
+      used: obj(x.handback) && Array.isArray(x.handback.used) ? x.handback.used.filter((e) => e && typeof e === 'object') : [],
+    };
     out.gradeExtras = obj(x.gradeExtras) ? x.gradeExtras : {};
     for (const [k, list] of Object.entries(out.gradeExtras)) {
       if (!Array.isArray(list)) { delete out.gradeExtras[k]; continue; }
@@ -2351,6 +2363,7 @@
   function renderTrees() {
     const all = window.Tree.SPECIES;
     animateNumber($('#tr-owned'), all.filter((x) => owns(x.id)).length, (v) => `${Math.round(v)} / ${all.length}`, 600);
+    renderHandbackBanner();
     animateNumber($('#tr-coins'), D.coins, (v) => Math.round(v).toLocaleString(), 600);
     $('#cases').innerHTML = CASES.map((c, i) => `<div class="case-card" style="--cc:${c.color};--i:${i}" data-c="${c.id}">
       <div class="case-stage"><div class="case-rays"></div><div class="case-beam"></div><div class="case-sparks">${'<i></i>'.repeat(12)}</div>
@@ -2405,6 +2418,99 @@
       $$('.col-card').forEach((x) => x.classList.toggle('selected', x === c));
       toast(`${esc(window.Tree.get(c.dataset.t).name)} will grow in your next session`);
     }));
+  }
+  // ---------------- one-time chest hand-back (1.19.2) ----------------
+  // Chests opened before 1.19.2 weren't logged, so the player says which chest each tree came from.
+  // Only chests that can drop that tree's rarity are offered. Paid: coins back (minus any duplicate
+  // refund already paid). Free: the free chest comes back. Study data is never touched.
+  const STARTERS = { oak: 1, pine: 1 };
+  const canHandBack = (id) => (D.collection.owned[id] || 0) > (STARTERS[id] || 0);
+  const casesFor = (rarity) => CASES.filter((c) => c.odds[rarity]);
+  function handbackValue(id, c, free) {
+    const r = window.Tree.RARITIES[window.Tree.get(id).rarity];
+    if (free) return { chest: c.id, coins: 0 };
+    // with more than one copy, the one handed back counts as the duplicate (it paid a refund when opened)
+    const dup = (D.collection.owned[id] || 0) > 1;
+    return { chest: null, coins: Math.max(0, c.price - (dup ? r.refund : 0)), dup };
+  }
+  function renderHandbackBanner() {
+    const host = $('#handback');
+    if (!host) return;
+    const left = D.handback.left, any = window.Tree.SPECIES.some((sp) => canHandBack(sp.id));
+    if (!left || !any) { host.innerHTML = ''; host.classList.add('hidden'); return; }
+    host.classList.remove('hidden');
+    host.innerHTML = `<div class="hb-banner"><div class="hb-icon"><span class="rw-box"></span></div>
+      <div class="hb-txt"><b>Chest do-over</b><span>Chests now use a stronger random roll. Hand back up to ${left} tree${left > 1 ? 's' : ''} you got from chests before this update and get back what you paid.</span></div>
+      <button class="btn primary" id="hb-open">Choose trees</button><button class="btn ghost" id="hb-skip">No thanks</button></div>`;
+    $('#hb-open').addEventListener('click', openHandback);
+    $('#hb-skip').addEventListener('click', async () => {
+      const ok = await modal({ title: 'Keep all your trees?', body: 'The do-over offer will go away and won\'t come back.', actions: [{ label: 'Back', ghost: true, value: false }, { label: 'Keep them', primary: true, value: true }] });
+      if (!ok) return;
+      D.handback.left = 0; save(true); renderHandbackBanner();
+    });
+  }
+  function openHandback() {
+    const back = document.createElement('div');
+    back.className = 'modal-back';
+    back.innerHTML = '<div class="modal hb-modal"></div>';
+    const box = $('.modal', back);
+    let pick = null, chest = null, free = false;
+    const close = () => { back.classList.add('closing'); setTimeout(() => back.remove(), 260); document.removeEventListener('keydown', onKey); renderTrees(); };
+    const onKey = (e) => { if (e.key === 'Escape') { if (pick) { pick = null; draw(); } else close(); } };
+    document.addEventListener('keydown', onKey);
+    back.addEventListener('mousedown', (e) => { if (e.target === back) close(); });
+    const draw = () => {
+      if (!D.handback.left) { close(); return; }
+      if (!pick) {
+        const ord = window.Tree.RARITY_ORDER;
+        const list = window.Tree.SPECIES.filter((sp) => canHandBack(sp.id)).sort((a, b) => ord.indexOf(b.rarity) - ord.indexOf(a.rarity));
+        box.innerHTML = `<h2>Hand back a tree</h2><p>Pick a tree you got from a chest. ${D.handback.left} left to hand back.</p>
+          <div class="hb-grid">${list.map((sp, i) => { const r = window.Tree.RARITIES[sp.rarity], n = D.collection.owned[sp.id] - (STARTERS[sp.id] || 0); return `<button class="col-card hb-tree" style="--rc:${r.color};--i:${i}" data-t="${sp.id}"><div class="col-img">${staticTree(sp.id, 3 * 3600, false, 'hb' + sp.id)}</div><div class="col-name">${esc(sp.name)}</div><div class="col-meta"><span class="rar">${r.name}</span>${n > 1 ? `<span class="cnt">×${n}</span>` : ''}</div></button>`; }).join('')}</div>
+          <div class="m-actions"><button class="btn ghost" data-a="close">Done</button></div>`;
+        paintTrees(box);
+        $$('.hb-tree', box).forEach((b) => b.addEventListener('click', () => { pick = b.dataset.t; chest = casesFor(window.Tree.get(pick).rarity)[0].id; free = false; draw(); }));
+      } else {
+        const sp = window.Tree.get(pick), r = window.Tree.RARITIES[sp.rarity];
+        const c = CASES.find((x) => x.id === chest), v = handbackValue(pick, c, free);
+        const last = D.collection.owned[pick] === 1;
+        box.innerHTML = `<div class="hb-pick" style="--rc:${r.color}"><div class="m-tree">${staticTree(pick, 3 * 3600, false, 'hbp')}</div><div class="cr-rar">${r.name}</div><h2>${esc(sp.name)}</h2></div>
+          <p>Which chest did it come from?</p>
+          <div class="hb-chests">${casesFor(sp.rarity).map((x) => `<button class="hb-chest${x.id === chest ? ' on' : ''}" style="--cc:${x.color}" data-c="${x.id}"><span class="rw-box"></span><b>${esc(x.name)}</b><small>${x.odds[sp.rarity]}% ${r.name.toLowerCase()}</small></button>`).join('')}</div>
+          <div class="hb-how"><button class="hb-seg${free ? '' : ' on'}" data-f="0"><span class="coin sm"></span>Paid with coins</button><button class="hb-seg${free ? ' on' : ''}" data-f="1">🎁 Opened it free</button></div>
+          <div class="hb-get">You get back: <b>${free ? `a free ${esc(c.name)}` : `<span class="coin sm"></span>${v.coins}`}</b>${!free && v.dup ? `<small>This was a duplicate, so the ${r.refund} coins you got back then come off.</small>` : ''}${last ? '<small>This is your only one, so it leaves your collection.</small>' : ''}</div>
+          <div class="m-actions"><button class="btn ghost" data-a="back">Back</button><button class="btn primary" data-a="go">Hand it back</button></div>`;
+        paintTrees(box);
+        $$('.hb-chest', box).forEach((b) => b.addEventListener('click', () => { chest = b.dataset.c; draw(); }));
+        $$('.hb-seg', box).forEach((b) => b.addEventListener('click', () => { free = b.dataset.f === '1'; draw(); }));
+        $('[data-a="back"]', box).addEventListener('click', () => { pick = null; draw(); });
+        $('[data-a="go"]', box).addEventListener('click', (ev) => {
+          const rect = ev.currentTarget.getBoundingClientRect();
+          applyHandback(pick, c, free);
+          burst(rect.left + rect.width / 2, rect.top, { n: 40, up: true, speed: 6, colors: [r.color, '#fde68a', '#ffffff'] });
+          toast(free ? `${esc(sp.name)} handed back. You have a free ${esc(c.name)} to open` : `${esc(sp.name)} handed back. +${v.coins} coins`);
+          pick = null; draw();
+        });
+      }
+      const p = $('.btn.primary', box); if (p) setTimeout(() => p.focus(), 30);
+    };
+    draw();
+    box.addEventListener('click', (e) => { if (e.target.closest('[data-a="close"]')) close(); });
+    $('#modal-host').appendChild(back);
+  }
+  function applyHandback(id, c, free) {
+    if (!D.handback.left || !canHandBack(id)) return;
+    const v = handbackValue(id, c, free);
+    D.collection.owned[id] -= 1;
+    if (!D.collection.owned[id]) {
+      delete D.collection.owned[id];
+      if (D.selectedTree === id) { D.selectedTree = 'oak'; if (T.state === 'idle') T.tree = 'oak'; }
+      D.favTrees = D.favTrees.filter((x) => x !== id);
+    }
+    if (free) { D.freeCases[c.id] = freeCount(c.id) + 1; updateNavDots(); } else { D.coins += v.coins; renderCoins(); }
+    D.collection.opened = Math.max(0, (D.collection.opened || 0) - 1);
+    D.handback.left -= 1;
+    D.handback.used.push({ at: new Date().toISOString(), tree: id, box: c.id, free: !!free, coins: v.coins });
+    save(true);
   }
   const REEL_W = 132;
   function openCase(c, free) {

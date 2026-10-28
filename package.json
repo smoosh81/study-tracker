@@ -1,6 +1,6 @@
 {
   "name": "study-tracker",
-  "version": "1.19.1",
+  "version": "1.19.2",
   "description": "Study Tracker: a stopwatch for studying that grows a garden",
   "main": "main.js",
   "scripts": {
