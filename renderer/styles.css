@@ -110,6 +110,10 @@ h3 { font-size: 15px; font-weight: 650; }
 .mini-stat { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 8px 16px; display: flex; flex-direction: column; min-width: 92px; transition: background .6s; }
 .ms-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; font-weight: 600; }
 .ms-val { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+#today-total { display: inline-block; transform-origin: left center; }
+#today-total.bump { animation: bump .5s var(--spring); }
+.mini-stat.live { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+.mini-stat.live .ms-label::after { content: ''; display: inline-block; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--accent); vertical-align: middle; animation: blink 1.6s ease-in-out infinite; }
 
 .card {
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px;
@@ -1256,6 +1260,7 @@ body.is-night .plot .tile.drop { fill: #efe08a; }
 .sc-w { fill: var(--accent); opacity: var(--o); transform-origin: 110px 110px; animation: scGrow .6s var(--spring) both; animation-delay: calc(var(--i) * 25ms); transition: opacity .2s; }
 .sc-w.none { fill: var(--surface2); opacity: .7; }
 .sc-w:hover { opacity: 1; }
+.sc-w.top { fill: var(--accent2); opacity: 1; }
 @keyframes scGrow { from { transform: scale(.5); opacity: 0; } }
 .study-clock.quiet .sc-w, .study-clock.quiet .sc-needle { animation: none; }
 .sc-dial text { font-size: 9.5px; fill: var(--muted); text-anchor: middle; font-weight: 650; }

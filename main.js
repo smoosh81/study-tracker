@@ -295,3 +295,11 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => app.quit());
+// on the way out, clear the "studying now" status friends see (gives up after 2.5 s)
+let saidBye = false;
+app.on('before-quit', (e) => {
+  if (saidBye || !app.isReady() || !social.configured()) return;
+  saidBye = true;
+  e.preventDefault();
+  Promise.race([social.call('bye'), new Promise((r) => setTimeout(r, 2500))]).finally(() => app.quit());
+});
