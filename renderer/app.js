@@ -224,7 +224,7 @@
       version: SCHEMA,
       migrationLog: [],
       profile: { name: '', setupDone: false, theme: 'forest', autoMini: false, tutorialSeen: false, welcome: true, notesSeen: '' },
-      collection: { owned: { oak: 1, pine: 1 }, opened: 0 },
+      collection: { owned: { oak: 1, pine: 1 }, opened: 0, log: [] },
       selectedTree: 'oak',
       favTrees: [],
       achievements: {},
@@ -259,6 +259,8 @@
     out.subjects.forEach((s) => { s.archived = !!s.archived; if (!s.id) s.id = uid(); });
     out.collection = Object.assign({ owned: {}, opened: 0 }, x.collection || {});
     out.collection.owned = Object.assign({ oak: 1, pine: 1 }, out.collection.owned || {});
+    // collection.log: every case opened since 1.19.2, newest last { at, box, tree, paid, back }
+    out.collection.log = Array.isArray(out.collection.log) ? out.collection.log.filter((e) => e && typeof e.tree === 'string').slice(-300) : [];
     if (!out.collection.owned[out.selectedTree]) out.selectedTree = 'oak';
     out.achievements = x.achievements && typeof x.achievements === 'object' && !Array.isArray(x.achievements) ? x.achievements : {};
     out.badgesSeeded = x.badgesSeeded !== false;
@@ -2421,6 +2423,8 @@
     D.collection.owned[won] = (D.collection.owned[won] || 0) + 1;
     D.collection.opened = (D.collection.opened || 0) + 1;
     if (!isNew) D.coins += r.refund;
+    D.collection.log.push({ at: new Date().toISOString(), box: c.id, tree: won, paid: free ? 0 : c.price, back: isNew ? 0 : r.refund });
+    if (D.collection.log.length > 300) D.collection.log.splice(0, D.collection.log.length - 300);
     save(true); // the result is stored before the animation, so closing the app can't lose it
 
     const ov = $('#case-overlay');
