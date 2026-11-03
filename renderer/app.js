@@ -240,7 +240,7 @@
     return {
       version: SCHEMA,
       migrationLog: [],
-      profile: { name: '', setupDone: false, theme: 'forest', autoMini: false, tutorialSeen: false, welcome: true, notesSeen: '', gardenAuto: true },
+      profile: { name: '', setupDone: false, theme: 'forest', autoMini: false, focusMode: false, tutorialSeen: false, welcome: true, notesSeen: '', gardenAuto: true },
       collection: { owned: { oak: 1, pine: 1 }, opened: 0, log: [], sold: [] },
       selectedTree: 'oak',
       favTrees: [],
@@ -547,6 +547,7 @@
     // leaving a friend's stats for any other page puts the Stats page back to mine
     if (VW && page !== 'stats' && page !== 'subject') { VW = null; statsHeads(); }
     if (page === currentPage) return;
+    if (page !== 'timer' && F.on) exitFocus(true);
     const from = $(`#page-${currentPage}`), to = $(`#page-${page}`);
     $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.page === navOf(page)));
     // the subject page slides in from the side it opens on, and back out the same way
@@ -821,6 +822,7 @@
     card.classList.toggle('paused', T.state === 'paused');
     $('#start-label').textContent = T.state === 'running' ? 'Pause' : T.state === 'paused' ? 'Resume' : 'Start';
     $('#subject-zone').classList.toggle('collapsed', T.state !== 'idle');
+    setFocusBtn();
     $('#greeting-sub').textContent = T.state === 'idle' ? 'Pick a subject and start the stopwatch.' : T.state === 'paused' ? 'Paused. Take a breather, then jump back in.' : 'Stay focused. Your tree is growing.';
     const as = $('#active-subject');
     as.classList.toggle('show', T.state !== 'idle');
@@ -953,6 +955,34 @@
     T.raf = setTimeout(loop, 200);
   }
 
+  // ---- focused mode: while a session runs the window goes full screen with only the timer and tree.
+  // Off by default (Settings). Esc, the Exit button, or leaving the timer page takes it away for
+  // the rest of that session; the Focused mode button under the timer brings it back.
+  const F = { on: false, skip: false };
+  function focusAllowed() { return !!D.profile.focusMode && T.state !== 'idle' && currentPage === 'timer' && !readOnly; }
+  function enterFocus(force) {
+    if (F.on || (!force && F.skip)) return;
+    if (!force && !focusAllowed()) return;
+    F.on = true; F.skip = false;
+    document.body.classList.add('focus');
+    window.api.setFocusMode(true);
+    const h = $('#focus-hint');
+    h.classList.remove('show'); void h.offsetWidth; h.classList.add('show');
+    clearTimeout(F.hintT); F.hintT = setTimeout(() => h.classList.remove('show'), 3200);
+    setFocusBtn();
+  }
+  function exitFocus(byUser) {
+    if (byUser) F.skip = true;
+    if (!F.on) { setFocusBtn(); return; }
+    F.on = false;
+    document.body.classList.remove('focus');
+    $('#focus-hint').classList.remove('show');
+    window.api.setFocusMode(false);
+    setFocusBtn();
+  }
+  function setFocusBtn() { $('#btn-focus').classList.toggle('show', !!D.profile.focusMode && T.state !== 'idle' && !F.on); }
+  window.api.on('focus:left', () => { if (F.on) exitFocus(true); });
+
   function start() {
     if (T.state === 'running') return pause();
     if (T.state === 'paused') return resume();
@@ -982,7 +1012,9 @@
     const r = $('#tree-holder').getBoundingClientRect();
     burst(r.left + r.width / 2, r.bottom - r.height * 0.1, { n: 18, up: true, speed: 4, colors: ['#a0703f', '#c79a64', '#6cc46f'] });
     save();
+    F.skip = false;
     if (D.profile.autoMini) setTimeout(() => window.api.openMini(), 400);
+    else enterFocus();
   }
   function pause() {
     const a = D.active; if (!a || !a.segStart) return;
@@ -993,6 +1025,7 @@
     const a = D.active; if (!a) return;
     a.segStart = Date.now();
     T.state = 'running'; setTimerClass(); updateTimerUI(true); save();
+    if (!miniOpen) enterFocus();
   }
   function finishActive() {
     clearTimeout(T.raf);
@@ -1002,6 +1035,9 @@
     T.lastSec = -1;
     setTimerClass();
     loop();
+    // let the planted (or withered) tree show for a moment, then bring the app back
+    F.skip = false;
+    setTimeout(() => { if (T.state === 'idle') exitFocus(); }, 2200);
     return a;
   }
   function witherTree() {
@@ -3852,6 +3888,7 @@
     $('#set-automini').classList.toggle('on', !!D.profile.autoMini);
     $('#set-welcome').classList.toggle('on', D.profile.welcome !== false);
     $$('.set-gardenauto').forEach((b) => b.classList.toggle('on', !gardenManual()));
+    $('#set-focus').classList.toggle('on', !!D.profile.focusMode);
     renderThemeGrid($('#set-themes'));
     renderSubjectSettings();
     renderGradingSettings();
@@ -4203,7 +4240,9 @@
     $('#btn-start').addEventListener('click', start);
     $('#btn-stop').addEventListener('click', stop);
     $('#btn-cancel').addEventListener('click', () => cancel(false));
-    $('#btn-mini').addEventListener('click', () => window.api.openMini());
+    $('#btn-mini').addEventListener('click', () => { if (F.on) exitFocus(true); window.api.openMini(); });
+    $('#btn-focus').addEventListener('click', () => enterFocus(true));
+    $('#focus-exit').addEventListener('click', () => exitFocus(true));
     $('#week-prev').addEventListener('click', () => { W.offset++; renderWeek(-1); });
     $('#week-next').addEventListener('click', () => { if (W.offset) { W.offset--; renderWeek(1); } });
     $('#tour-next').addEventListener('click', () => { if (tourStep >= TOUR.length - 1) return endTour(); tourStep++; showTourStep(); });
@@ -4221,6 +4260,8 @@
       }
       if (e.target.matches('input, select, textarea') || $('.modal-back') || !$('#onboarding').classList.contains('hidden') || !$('#case-overlay').classList.contains('hidden')) return;
       if (e.code === 'Space' && currentPage === 'timer') { e.preventDefault(); start(); }
+      if (e.key === 'Escape' && F.on) { e.preventDefault(); exitFocus(true); return; }
+      if (F.on && e.ctrlKey && e.key >= '1' && e.key <= '9') return;
       if ((e.key === 'Escape' || e.key === 'Backspace') && currentPage === 'subject') { e.preventDefault(); go('stats'); }
       else if ((e.key === 'Escape' || e.key === 'Backspace') && currentPage === 'stats' && VW) { e.preventDefault(); go('friends'); }
       if (e.ctrlKey && e.key >= '1' && e.key <= '9') go(['timer', 'stats', 'grades', 'garden', 'trees', 'friends', 'badges', 'history', 'settings'][+e.key - 1]);
@@ -4279,6 +4320,7 @@
       if (window.Friends && window.Friends.cleanName(D.profile.name).censored) toast('Friends will see "Student" instead, because that name has a word that isn\'t allowed', 4200);
     });
     $('#set-automini').addEventListener('click', () => { D.profile.autoMini = !D.profile.autoMini; $('#set-automini').classList.toggle('on', D.profile.autoMini); save(); });
+    $('#set-focus').addEventListener('click', () => { D.profile.focusMode = !D.profile.focusMode; $('#set-focus').classList.toggle('on', D.profile.focusMode); save(); setFocusBtn(); });
     $('#set-welcome').addEventListener('click', () => { D.profile.welcome = D.profile.welcome === false; $('#set-welcome').classList.toggle('on', D.profile.welcome); save(); });
     $('#set-gardenauto').addEventListener('click', () => {
       setGardenAuto(gardenManual());

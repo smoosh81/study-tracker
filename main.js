@@ -87,13 +87,16 @@ function boundsVisible(b) {
   });
 }
 let winSaveTimer = null;
+// focused mode (timer full screen): whether the window was maximised before it went full screen
+let focusWasMax = null;
 function saveWinState(now) {
   clearTimeout(winSaveTimer);
   const write = () => {
     if (!mainWin || mainWin.isDestroyed()) return;
     const minimized = mainWin.isMinimized();
     const state = {
-      maximized: minimized ? wasMaximized : mainWin.isMaximized(),
+      // while focused mode has the window full screen, remember how it was before that
+      maximized: mainWin.isFullScreen() && focusWasMax !== null ? focusWasMax : minimized ? wasMaximized : mainWin.isMaximized(),
       bounds: mainWin.getNormalBounds(),
     };
     try { fs.mkdirSync(path.dirname(WIN_FILE()), { recursive: true }); fs.writeFileSync(WIN_FILE(), JSON.stringify(state)); } catch (e) {}
@@ -142,6 +145,12 @@ function createMain() {
     mainWin.show();
   });
   for (const ev of ['resize', 'move']) mainWin.on(ev, () => saveWinState());
+  // focused mode: tell the page when the window stops being full screen (Esc, F11, or the app itself)
+  mainWin.on('leave-full-screen', () => {
+    if (focusWasMax !== null && !mainWin.isMinimized() && focusWasMax) mainWin.maximize();
+    focusWasMax = null;
+    mainWin.webContents.send('focus:left');
+  });
   mainWin.on('maximize', () => { wasMaximized = true; saveWinState(); });
   mainWin.on('unmaximize', () => { if (!mainWin.isMinimized()) { wasMaximized = false; saveWinState(); } });
   mainWin.on('close', () => saveWinState(true));
@@ -243,9 +252,22 @@ app.whenReady().then(() => {
 
   // Mini player plumbing: the main window owns the timer and pushes state;
   // the mini player sends button presses back.
+  // focused mode: the timer fills the whole screen while a session runs
+  listen('focus:set', (_e, on) => {
+    if (!mainWin || mainWin.isDestroyed()) return;
+    if (on && !mainWin.isFullScreen() && !mainWin.isMinimized()) {
+      focusWasMax = mainWin.isMaximized();
+      mainWin.setFullScreen(true);
+    } else if (!on && mainWin.isFullScreen()) mainWin.setFullScreen(false);
+  });
   listen('mini:open', () => {
     createMini();
-    if (mainWin) {
+    if (mainWin && mainWin.isFullScreen()) {
+      // leave full screen first, then tuck the window away for the mini player
+      wasMaximized = !!focusWasMax;
+      mainWin.once('leave-full-screen', () => setTimeout(() => { if (mainWin && !mainWin.isDestroyed()) mainWin.minimize(); }, 50));
+      mainWin.setFullScreen(false);
+    } else if (mainWin) {
       if (!mainWin.isMinimized()) wasMaximized = mainWin.isMaximized();
       mainWin.minimize();
     }

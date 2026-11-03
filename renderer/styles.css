@@ -1488,3 +1488,41 @@ body.is-night .plot .tile.drop { fill: #efe08a; }
 .gd-ghost.bad { opacity: .6; filter: grayscale(.6) drop-shadow(0 14px 10px rgba(0, 0, 0, .35)); }
 .gd-ghost.home { transition: left .3s var(--ease), top .3s var(--ease), transform .3s var(--ease), opacity .3s; opacity: 0; transform: translate(-50%, -50%) scale(.6); }
 @media (max-width: 1050px) { .gd-main { grid-template-columns: 1fr 220px; } .gd-tools .btn { padding: 6px 9px; } }
+
+/* ===================== focused mode (timer full screen while studying) ===================== */
+.launch-row { display: flex; justify-content: center; align-items: center; gap: 6px 18px; flex-wrap: wrap; }
+.focus-launch { display: none; }
+.focus-launch.show { display: inline-flex; animation: rise .5s var(--ease) both; }
+.focus-launch svg { fill: none; }
+#titlebar { transition: transform .55s var(--ease), opacity .45s var(--ease); }
+#app { transition: opacity .6s var(--ease), filter .6s var(--ease), padding-top .55s var(--ease); }
+#sidebar { transition: width .55s var(--ease), padding .55s var(--ease), opacity .4s var(--ease), transform .55s var(--ease); }
+#page-timer .page-head { max-height: 180px; transition: max-height .55s var(--ease), opacity .4s var(--ease), margin .55s var(--ease); }
+#page-timer { transition: padding .55s var(--ease); }
+#page-timer .timer-card > .clock-wrap { transition: max-height .6s var(--ease); }
+body.focus #titlebar { transform: translateY(-100%); opacity: 0; pointer-events: none; }
+body.focus #app { padding-top: 0; }
+body.focus #sidebar { width: 0; padding-left: 0; padding-right: 0; opacity: 0; transform: translateX(-40px); pointer-events: none; }
+body.focus #page-timer { padding: 28px 34px; }
+body.focus #page-timer .page-head { max-height: 0; opacity: 0; margin-bottom: -18px; overflow: hidden; pointer-events: none; }
+body.focus #page-timer .timer-card > .clock-wrap { max-height: 460px; }
+body.focus .launch-row { display: none; }
+#focus-ui { position: fixed; inset: 0; pointer-events: none; z-index: 60; }
+.focus-exit {
+  position: absolute; top: 16px; right: 18px; display: flex; align-items: center; gap: 8px; pointer-events: auto;
+  padding: 7px 10px 7px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface);
+  color: var(--muted); font: 600 12.5px var(--font); cursor: pointer; backdrop-filter: blur(10px);
+  opacity: 0; transform: translateY(-14px) scale(.96); visibility: hidden;
+  transition: opacity .45s var(--ease), transform .5s var(--spring), color .25s, visibility 0s .5s;
+}
+.focus-exit svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.focus-exit kbd, .focus-hint kbd { font: 700 11px var(--font); padding: 1px 6px; border-radius: 5px; border: 1px solid var(--border); background: color-mix(in srgb, var(--text) 8%, transparent); }
+body.focus .focus-exit { opacity: .45; transform: none; visibility: visible; transition: opacity .45s var(--ease) .35s, transform .5s var(--spring) .35s, color .25s, visibility 0s; }
+body.focus .focus-exit:hover { opacity: 1; color: var(--text); }
+.focus-hint {
+  position: absolute; top: 18px; left: 50%; transform: translate(-50%, -20px); opacity: 0;
+  padding: 8px 16px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border);
+  font-size: 13px; color: var(--muted); backdrop-filter: blur(10px); white-space: nowrap;
+  transition: opacity .5s var(--ease), transform .6s var(--spring);
+}
+.focus-hint.show { opacity: 1; transform: translate(-50%, 0); transition-delay: .4s; }
