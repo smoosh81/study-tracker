@@ -3920,7 +3920,7 @@
     const box = $('#set-tabs');
     box.innerHTML = '';
     $$('#sidebar .nav-item').forEach((b, i) => {
-      const p = b.dataset.page, locked = LOCKED_TABS.includes(p), name = b.textContent.trim();
+      const p = b.dataset.page, locked = LOCKED_TABS.includes(p), name = (b.querySelector('span') || b).textContent.trim();
       const el = document.createElement('button');
       el.className = 'tab-toggle' + (tabOff(p) ? '' : ' on') + (locked ? ' locked' : '');
       el.style.setProperty('--i', i);
