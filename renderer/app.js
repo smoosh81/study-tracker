@@ -518,17 +518,27 @@
   // The sidebar starts with only the Timer showing; the arrow under it opens the rest.
   // The page you're on always stays visible, so you never lose your place.
   let navOpen = false;
+  // Tabs the user switched off in Settings never show in the sidebar (unless you're on that page).
+  // Timer and Settings can't be switched off, so nobody gets locked out.
+  const LOCKED_TABS = ['timer', 'settings'];
+  const tabOff = (page) => !LOCKED_TABS.includes(page) && (D.profile.hiddenTabs || []).includes(page);
   function layoutNav(animate) {
     const side = $('#sidebar');
     side.classList.toggle('nav-open', navOpen);
-    let k = 0;
+    let k = 0, extra = 0;
     $$('.nav-item').forEach((b) => {
-      const show = navOpen || b.dataset.page === 'timer' || b.dataset.page === 'settings' || b.dataset.page === navOf(currentPage);
+      const p = b.dataset.page, here = p === navOf(currentPage);
+      if (!LOCKED_TABS.includes(p) && !tabOff(p)) extra++;
+      b.classList.toggle('nav-off', tabOff(p));
+      const show = here || p === 'timer' || p === 'settings' || (navOpen && !tabOff(p));
       b.style.setProperty('--k', show && !b.classList.contains('nav-shown') ? k++ : 0);
       b.classList.toggle('nav-shown', show);
       b.classList.toggle('tucked', !show);
       b.tabIndex = show ? 0 : -1;
     });
+    // nothing left to open, so the arrow goes away too
+    $('#nav-more').classList.toggle('tucked', !extra);
+    $('#nav-more').tabIndex = extra ? 0 : -1;
     $('#nav-more').title = navOpen ? 'Show fewer tabs' : 'Show all tabs';
     $('#nav-more').setAttribute('aria-expanded', navOpen);
     // keep the highlight on the right tab while the others slide in and out
@@ -3314,14 +3324,15 @@
     // a red dot on the arrow when a hidden tab has something waiting
     const more = $('#nav-more');
     if (more) {
-      const hidden = $$('.nav-item.tucked .ndot').length;
+      const hidden = $$('.nav-item.tucked:not(.nav-off) .ndot').length;
       more.classList.toggle('has-dot', !navOpen && hidden > 0);
     }
   }
   // flies a little gift box from an element to the Trees tab
   function flyGift(fromEl, color) {
     const trees = $('.nav-item[data-page="trees"]');
-    const to = (trees.classList.contains('tucked') ? $('#nav-more') : trees).getBoundingClientRect();
+    const navTo = () => (!trees.classList.contains('tucked') ? trees : !$('#nav-more').classList.contains('tucked') ? $('#nav-more') : $('#coin-pill'));
+    const to = navTo().getBoundingClientRect();
     const fr = fromEl.getBoundingClientRect();
     const g = document.createElement('div');
     g.className = 'flying-gift';
@@ -3335,7 +3346,7 @@
     }));
     setTimeout(() => {
       g.remove();
-      const nav = trees.classList.contains('tucked') ? $('#nav-more') : trees;
+      const nav = navTo();
       nav.classList.remove('bump'); void nav.offsetWidth; nav.classList.add('bump');
       updateNavDots();
     }, 950);
@@ -3755,7 +3766,7 @@
   }
 
   // ---------------- tutorial ----------------
-  const TOUR = [
+  const TOUR_ALL = [
     { sel: null, title: 'Welcome to Study Tracker', text: 'Here\'s a quick tour of how it works. It takes about 30 seconds.' },
     { sel: '#subject-chips', title: 'Pick a subject', text: 'Choose what you\'re about to study. You need a subject before you can start.' },
     { sel: '#tree-chips', title: 'Pick a tree', text: 'Choose which tree to grow. Your last session\'s tree is picked for you.' },
@@ -3772,9 +3783,15 @@
     { sel: '.nav-item[data-page="settings"]', title: 'Settings', text: 'Change subjects, mark finished ones, switch themes, and back up your data.' },
     { sel: '#coin-pill', title: 'Your coins', text: 'Your coin total is always up here. That\'s everything. Happy studying!' },
   ];
-  let tourStep = 0;
+  let tourStep = 0, TOUR = TOUR_ALL;
   function startTour() {
     if (T.state === 'idle' && currentPage !== 'timer') go('timer');
+    // skip the tabs the user has switched off
+    const allOff = $('#nav-more').classList.contains('tucked');
+    TOUR = TOUR_ALL.filter((st) => {
+      const m = /data-page="(\w+)"/.exec(st.sel || '');
+      return !(m && tabOff(m[1])) && !(st.sel === '#nav-more' && allOff);
+    });
     tourStep = 0;
     $('#tour').classList.remove('hidden', 'closing');
     setTimeout(showTourStep, 60);
@@ -3892,7 +3909,49 @@
     renderThemeGrid($('#set-themes'));
     renderSubjectSettings();
     renderGradingSettings();
+    renderTabSettings();
   }
+  // ---- sidebar tabs: switch each one on or off (Timer and Settings always stay) ----
+  function tabsNote() {
+    const n = (D.profile.hiddenTabs || []).filter((p) => !LOCKED_TABS.includes(p)).length;
+    $('#set-tabs-note').textContent = n ? `${n} tab${n > 1 ? 's' : ''} hidden. Their Ctrl+number shortcuts still open them.` : 'All tabs are showing.';
+  }
+  function renderTabSettings() {
+    const box = $('#set-tabs');
+    box.innerHTML = '';
+    $$('#sidebar .nav-item').forEach((b, i) => {
+      const p = b.dataset.page, locked = LOCKED_TABS.includes(p), name = b.textContent.trim();
+      const el = document.createElement('button');
+      el.className = 'tab-toggle' + (tabOff(p) ? '' : ' on') + (locked ? ' locked' : '');
+      el.style.setProperty('--i', i);
+      el.dataset.page = p;
+      el.setAttribute('role', 'switch');
+      el.setAttribute('aria-checked', !tabOff(p));
+      el.title = locked ? `${name} always stays, so you can't get locked out` : `Show or hide ${name} in the sidebar`;
+      el.innerHTML = b.querySelector('svg').outerHTML + `<span>${name}</span><i class="tt-check">${locked ? LOCK_ICON : CHECK_ICON}</i>`;
+      if (locked) el.setAttribute('aria-disabled', 'true');
+      el.addEventListener('click', () => {
+        if (locked) { el.classList.remove('nope'); void el.offsetWidth; el.classList.add('nope'); return; }
+        const off = new Set(D.profile.hiddenTabs || []);
+        off.has(p) ? off.delete(p) : off.add(p);
+        D.profile.hiddenTabs = [...off];
+        el.classList.toggle('on', !off.has(p));
+        el.setAttribute('aria-checked', !off.has(p));
+        el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop');
+        // turning a tab back on opens the sidebar so you can see it slide in
+        if (!off.has(p)) navOpen = true;
+        layoutNav(true);
+        const nb = $(`.nav-item[data-page="${p}"]`);
+        if (!off.has(p)) { nb.classList.remove('bump'); void nb.offsetWidth; nb.classList.add('bump'); }
+        tabsNote();
+        save();
+      });
+      box.appendChild(el);
+    });
+    tabsNote();
+  }
+  const CHECK_ICON = '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+  const LOCK_ICON = '<svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
   const ARCHIVE_ICON = '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4"/></svg>';
   const RESTORE_ICON = '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>';
   function renderSubjectSettings() {
