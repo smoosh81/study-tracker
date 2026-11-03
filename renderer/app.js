@@ -240,7 +240,7 @@
     return {
       version: SCHEMA,
       migrationLog: [],
-      profile: { name: '', setupDone: false, theme: 'forest', autoMini: false, tutorialSeen: false, welcome: true, notesSeen: '' },
+      profile: { name: '', setupDone: false, theme: 'forest', autoMini: false, tutorialSeen: false, welcome: true, notesSeen: '', gardenAuto: true },
       collection: { owned: { oak: 1, pine: 1 }, opened: 0, log: [], sold: [] },
       selectedTree: 'oak',
       favTrees: [],
@@ -251,6 +251,7 @@
       giftNotice: 'welcome',
       decor: {},
       gardenSpots: {},
+      gardenStored: {}, // garden view -> item keys put away in the garden designer's tray (1.22.0)
       handback: { left: 0, used: [] }, // one-time chest hand-back (only saves from before 1.19.2 get it)
       login: { last: '', days: 0 }, // daily reward: last day claimed and how many days so far // garden view ('*' = all trees) -> { item key: [row, col] } once the user has dragged something
       social: blankSocial(),
@@ -298,6 +299,11 @@
       for (const [k, c] of Object.entries(spots)) if (Array.isArray(c) && c.length === 2 && c.every((v) => Number.isInteger(v) && v >= 0 && v < 80)) ok[k] = c;
       out.gardenSpots[view] = ok;
     }
+    out.gardenStored = {};
+    if (obj(x.gardenStored)) for (const [view, keys] of Object.entries(x.gardenStored)) {
+      if (Array.isArray(keys)) out.gardenStored[view] = keys.filter((k) => typeof k === 'string').slice(0, 2000);
+    }
+    out.profile.gardenAuto = out.profile.gardenAuto !== false;
     out.social = Object.assign(blankSocial(), obj(x.social) ? x.social : {});
     ['claims', 'gifts', 'names', 'blocked'].forEach((k) => { if (!obj(out.social[k])) out.social[k] = {}; });
     if (!obj(out.social.giftLog)) out.social.giftLog = { day: '', spent: 0 };
@@ -1286,35 +1292,48 @@
     const decorCells = empties.slice(0, decor.length);
     empties = empties.slice(decor.length);
     const decorKeys = decor.map((id, k) => `d:${id}:${decor.slice(0, k).filter((x) => x === id).length}`);
-    const spots = opts.spots;
-    if (spots && Object.keys(spots).length) {
+    const spots = opts.spots || {};
+    // items the user has put away in the garden designer's tray (and, with "plant new trees
+    // myself" on, anything that hasn't been given a spot yet) are left off the plot
+    const stored = opts.stored || new Set();
+    const tray = [];
+    const toTray = (e) => { e.set(null); tray.push(e.tree ? { key: e.key, x: e.tree.x, k: e.tree.k } : { key: e.key, decor: e.decor }); };
+    if (Object.keys(spots).length || stored.size) {
       // the garden has been arranged by hand: keep everything where it was put,
       // and give anything new its usual spot, or the nearest free one
       Object.values(spots).forEach(([i, j]) => { n = Math.max(n, i + 1, j + 1); });
-      const ents = placed.map((p) => ({ key: `t:${p.x.id}:${p.k}`, want: p.cell, set: (c) => { p.cell = c; } }))
-        .concat(decor.map((id, k) => ({ key: decorKeys[k], want: decorCells[k], set: (c) => { decorCells[k] = c; } })));
+      let ents = placed.map((p) => ({ key: `t:${p.x.id}:${p.k}`, want: p.cell, set: (c) => { p.cell = c; }, tree: p }))
+        .concat(decor.map((id, k) => ({ key: decorKeys[k], want: decorCells[k], set: (c) => { decorCells[k] = c; }, decor: id })));
+      ents = ents.filter((e) => {
+        if (!stored.has(e.key) && (spots[e.key] || !opts.manual)) return true;
+        toTray(e);
+        return false;
+      });
       const taken = new Set(), at = (c) => c[0] * n + c[1];
       const fits = (c) => Array.isArray(c) && c[0] >= 0 && c[1] >= 0 && c[0] < n && c[1] < n;
       ents.forEach((e) => { const c = spots[e.key]; if (fits(c) && !taken.has(at(c))) { taken.add(at(c)); e.set([c[0], c[1]]); e.done = true; } });
       const later = [];
-      ents.forEach((e) => { if (e.done) return; if (!taken.has(at(e.want))) { taken.add(at(e.want)); e.set(e.want); } else later.push(e); });
+      ents.forEach((e) => { if (e.done) return; if (fits(e.want) && !taken.has(at(e.want))) { taken.add(at(e.want)); e.set(e.want); } else later.push(e); });
       later.forEach((e) => {
         let best = null, bd = Infinity;
         for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
           if (taken.has(i * n + j)) continue;
-          const d = (i - e.want[0]) ** 2 + (j - e.want[1]) ** 2;
+          const w = e.want || [n / 2, n / 2];
+          const d = (i - w[0]) ** 2 + (j - w[1]) ** 2;
           if (d < bd) { bd = d; best = [i, j]; }
         }
+        if (!best) return toTray(e);
         taken.add(at(best)); e.set(best);
       });
       empties = [];
       for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) if (!taken.has(i * n + j)) empties.push([i, j]);
     }
-    const TW = 64, TH = 32, DEPTH = 26, TREE_W = 58, TREE_H = 72;
+    const TW = 64, TH = 32, DEPTH = 26, TREE_W = 58, TREE_H = 72, HIT_W = 36, HIT_H = 60;
     const W = n * TW, top = TREE_H - 8, H = top + n * TH + DEPTH + 6;
     const cx0 = W / 2;
     const pos = (i, j) => [cx0 + (i - j) * TW / 2, top + (i + j + 1) * TH / 2];
-    const owner = new Map(placed.map((p) => [p.cell[0] * n + p.cell[1], p.x.id]));
+    const onPlot = placed.filter((p) => p.cell);
+    const owner = new Map(onPlot.map((p) => [p.cell[0] * n + p.cell[1], p.x.id]));
     let tiles = '';
     for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
       const [x, y] = pos(i, j);
@@ -1331,21 +1350,25 @@
         : `<g class="deco" transform="translate(${x + ox},${y + oy})"><circle r="2.6" cy="-3" fill="${['#fde047', '#f9a8d4', '#ffffff', '#c4b5fd'][h % 4]}"/><circle r="1.1" cy="-3" fill="#f59e0b"/></g>`;
     });
     // trees and decorations are drawn back to front together
-    const items = placed.map((p) => ({ cell: p.cell, tree: p }))
-      .concat(decorCells.map((cell, k) => ({ cell, decor: decor[k], key: decorKeys[k] })))
+    const items = onPlot.map((p) => ({ cell: p.cell, tree: p }))
+      .concat(decorCells.map((cell, k) => ({ cell, decor: decor[k], key: decorKeys[k] })).filter((it) => it.cell))
       .sort((a, b) => (a.cell[0] + a.cell[1]) - (b.cell[0] + b.cell[1]) || a.cell[0] - b.cell[0]);
     const drawn = items.map((it, k) => {
       const [px, py] = pos(it.cell[0], it.cell[1]);
       const at = `data-cell="${it.cell[0]},${it.cell[1]}"`;
-      if (it.decor) return `<g class="dc" data-d="${it.decor}" data-key="${it.key}" ${at} transform="translate(${px},${py})" style="--d:${Math.min(k, 120) * 14}ms"><g class="dc-in">${decorSvg(it.decor)}</g></g>`;
+      const fresh = opts.fresh && opts.fresh.has(it.key || `t:${it.tree.x.id}:${it.tree.k}`) ? ' fresh' : '';
+      if (it.decor) return `<g class="dc${fresh}" data-d="${it.decor}" data-key="${it.key}" ${at} transform="translate(${px},${py})" style="--d:${Math.min(k, 120) * 14}ms"><g class="dc-in">${decorSvg(it.decor)}</g><rect class="pt-hit" x="-22" y="-40" width="44" height="48" rx="10"/></g>`;
       const { x, k: nth } = it.tree;
       const svg = window.Tree.build(treeOfSession(x), (opts.key || 'p') + x.id + '_' + nth)
         .replace('<svg class="tree', `<svg x="${px - TREE_W / 2}" y="${py - TREE_H + 6}" width="${TREE_W}" height="${TREE_H}" data-sec="${Math.round(x.duration)}"${isWithered(x) ? ' data-withered="1"' : ''} data-fixed="1" class="tree static`)
         .replace('viewBox="0 0 200 240"', 'viewBox="14 0 172 220"');
-      return `<g class="pt" data-id="${x.id}" data-key="t:${x.id}:${nth}" ${at} style="--d:${Math.min(k, 120) * 14}ms">${svg}</g>`;
+      // the tree is drawn inside .pt-in, which grows on hover, while the plain box in front of it
+      // (.pt-hit) stays put and takes the mouse. A growing or bouncing tree used to slip out from
+      // under the pointer, which flickered the hover on and off and made the tree spaz out.
+      return `<g class="pt${fresh}" data-id="${x.id}" data-key="t:${x.id}:${nth}" ${at} style="--d:${Math.min(k, 120) * 14}ms"><g class="pt-in">${svg}</g><rect class="pt-hit" x="${px - HIT_W / 2}" y="${py - HIT_H + 4}" width="${HIT_W}" height="${HIT_H}" rx="10"/></g>`;
     }).join('');
     const y0 = top + n * TH / 2, yb = top + n * TH;
-    host.innerHTML = `<svg class="plot" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+    host.innerHTML = `<svg class="plot${opts.calm ? ' calm' : ''}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
       <polygon points="0,${y0} ${cx0},${yb} ${cx0},${yb + DEPTH} 0,${y0 + DEPTH}" class="side-l"/>
       <polygon points="${W},${y0} ${cx0},${yb} ${cx0},${yb + DEPTH} ${W},${y0 + DEPTH}" class="side-r"/>
       <polygon points="0,${y0} ${cx0},${yb} ${cx0},${yb + 6} 0,${y0 + 6}" class="lip-l"/>
@@ -1382,9 +1405,17 @@
         const c = (a) => Math.max(0, Math.min(n - 1, Math.round(a)));
         return [c((u + v) / 2), c((v - u) / 2)];
       };
-      plotDrag(plot, { n, pos, cellAt, TREE_W, TREE_H, onMove: opts.onMove, unlight: () => { plot.classList.remove('hl'); $$('.lit', plot).forEach((el) => el.classList.remove('lit')); } });
+      plotDrag(plot, { n, pos, cellAt, TREE_W, TREE_H, HIT_W, HIT_H, onMove: opts.onMove, instant: opts.instant, tray: opts.trayEl, onStore: opts.onStore, unlight: () => { plot.classList.remove('hl'); $$('.lit', plot).forEach((el) => el.classList.remove('lit')); } });
     }
-    return { shown: shown.length, total: list.length };
+    // which tile is under a point on screen (null when it's off the plot); used by the designer
+    const cellAtClient = (cx, cy) => {
+      const p = plot.createSVGPoint(); p.x = cx; p.y = cy;
+      const q = p.matrixTransform(plot.getScreenCTM().inverse());
+      const u = (q.x - cx0) / (TW / 2), v = (q.y - top) / (TH / 2) - 1;
+      const i = Math.round((u + v) / 2), j = Math.round((v - u) / 2);
+      return i >= 0 && j >= 0 && i < n && j < n ? [i, j] : null;
+    };
+    return { shown: shown.length, total: list.length, tray, n, cellAtClient };
   }
 
   // Garden page only: click and hold a tree or decoration, then drag it to another tile.
@@ -1399,10 +1430,14 @@
     const place = (g, x, y) => {
       g._at = [x, y];
       if (g.classList.contains('dc')) g.setAttribute('transform', `translate(${x.toFixed(1)},${y.toFixed(1)})`);
-      else { const svg = g.firstElementChild; svg.setAttribute('x', (x - o.TREE_W / 2).toFixed(1)); svg.setAttribute('y', (y - o.TREE_H + 6).toFixed(1)); }
+      else {
+        const svg = $('.pt-in > svg', g), hit = $('.pt-hit', g);
+        svg.setAttribute('x', (x - o.TREE_W / 2).toFixed(1)); svg.setAttribute('y', (y - o.TREE_H + 6).toFixed(1));
+        hit.setAttribute('x', (x - o.HIT_W / 2).toFixed(1)); hit.setAttribute('y', (y - o.HIT_H + 4).toFixed(1));
+      }
     };
     // the shape that plays the hold / lift / land animations
-    const body = (g) => (g.classList.contains('dc') ? g.firstElementChild : g);
+    const body = (g) => g.firstElementChild;
     const glide = (g, to, ms) => {
       const from = g._at || o.pos(...cellOf(g)), t0 = performance.now();
       const step = (t) => {
@@ -1456,16 +1491,24 @@
       const from = cellOf(g), base = o.pos(...from), p = toSvg(e);
       g._at = base;
       layer.appendChild(g);
-      drag = { g, from, target: from, grab: [p.x - base[0], p.y - base[1] + 6], want: [base[0], base[1] - 6] };
+      drag = { g, from, target: from, grab: [p.x - base[0], p.y - base[1] + 6], want: [base[0], base[1] - 6], over: false };
       markDrop(from);
       drag.raf = requestAnimationFrame(tick);
     };
+    const overTray = (e) => {
+      if (!o.tray) return false;
+      const r = o.tray.getBoundingClientRect();
+      return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+    };
     const finish = (cancel) => {
-      const { g, from, target } = drag;
+      const { g, from, target, over } = drag;
       cancelAnimationFrame(drag.raf);
       drag = null;
       markDrop(null);
       plot.classList.remove('dragging');
+      if (o.tray) o.tray.classList.remove('drop-in');
+      // designer: dropped onto the tray, so it goes back in there
+      if (over && !cancel) { g.classList.add('stowing'); o.onStore(g.dataset.key, g); return; }
       g.classList.remove('lifted');
       const to = cancel ? from : target;
       const moved = to.join(',') !== from.join(',');
@@ -1495,7 +1538,12 @@
       const sx = e.clientX, sy = e.clientY;
       g.classList.add('holding');
       const stop = () => { clearTimeout(hold && hold.t); hold = null; g.classList.remove('holding'); window.removeEventListener('pointermove', early); window.removeEventListener('pointerup', stop); };
-      const early = (ev) => { if (Math.hypot(ev.clientX - sx, ev.clientY - sy) > 6) stop(); };
+      // in the designer things pick up as soon as the pointer moves, no need to hold
+      const early = (ev) => {
+        if (Math.hypot(ev.clientX - sx, ev.clientY - sy) <= (o.instant ? 3 : 6)) return;
+        stop();
+        if (o.instant) lift(g, ev);
+      };
       hold = { t: setTimeout(() => { window.removeEventListener('pointermove', early); window.removeEventListener('pointerup', stop); lift(g, e); }, HOLD) };
       window.addEventListener('pointermove', early);
       window.addEventListener('pointerup', stop);
@@ -1505,6 +1553,9 @@
       const p = toSvg(e);
       const x = p.x - drag.grab[0], y = p.y - drag.grab[1];
       drag.want = [x, y - 6];
+      const over = overTray(e);
+      if (over !== drag.over) { drag.over = over; o.tray.classList.toggle('drop-in', over); drag.g.classList.toggle('to-tray', over); markDrop(over ? null : drag.target); }
+      if (over) return;
       const c = o.cellAt(x, y);
       if (c.join(',') !== drag.target.join(',')) { drag.target = c; markDrop(c); }
     });
@@ -1577,7 +1628,7 @@
       renderCoins();
       const r = e.currentTarget.getBoundingClientRect();
       burst(r.left + r.width / 2, r.top, { n: 30, up: true, speed: 6, leaf: false, colors: ['#fde047', '#86efac', '#ffffff'] });
-      toast(`${esc(d.name)} added to your garden`);
+      toast(gardenManual() ? `${esc(d.name)} is waiting in the garden designer's tray` : `${esc(d.name)} added to your garden`);
       renderDecorShop();
       renderGardenScene(D.trees.filter((t) => !gardenFilter || t.subject === gardenFilter));
       setTimeout(() => $('#garden-scene').scrollIntoView({ behavior: 'smooth', block: 'center' }), 250);
@@ -2243,24 +2294,35 @@
     }
     const items = gardenItems(trees);
     const view = gardenFilter || '*';
+    // planting by hand: a view that has never been arranged is pinned the way it looks now
+    if (gardenManual() && !readOnly && !gardenArranged(view)) { freezeGarden(view); if (gardenArranged(view)) save(); }
     const r = renderPlot($('#garden-plot'), items, {
-      seed: 'garden' + (gardenFilter || ''), key: 'gd', min: 5, count: sessionTrees, decor: decorList(),
-      spots: D.gardenSpots[view],
+      ...gardenOpts(view), spots: D.gardenSpots[view], stored: storedOf(view), manual: gardenManual(),
       onMove: readOnly ? null : (layout) => { D.gardenSpots[view] = layout; save(); },
     });
+    const waiting = r.tray.length, badge = $('#gs-design b');
+    badge.textContent = waiting ? `${waiting} in tray` : '';
+    badge.classList.toggle('hidden', !waiting);
     const total = trees.reduce((a, t) => a + (t.duration || 0), 0), count = trees.reduce((a, t) => a + treeCountOf(t), 0);
     $('#gs-caption').innerHTML = trees.length ? `<b>${count}</b> tree${count === 1 ? '' : 's'} · ${fmtDur(total)} of growing${r.shown < r.total ? ` · showing the latest ${r.shown}` : ''}<span class="gs-hint"> · hold to move things</span>` : 'Your first tree will appear here after 10 minutes of study';
+    if (!readOnly) $('#gs-caption').classList.toggle('has-tray', !!waiting);
   }
   // What friends get to see of my garden: the same trees, decorations and layout as my own
   // "All trees" view. Each tree is [id, species, date, seconds, subject number, withered].
   function gardenShare() {
-    const items = gardenItems(D.trees).slice(-PLOT_MAX);
+    // things in my tray aren't in my garden, so friends don't see them either
+    const spots = D.gardenSpots['*'] || {}, st = storedOf('*');
+    const arranged = Object.keys(spots).length > 0 || st.size > 0;
+    const hidden = (key) => st.has(key) || (arranged && gardenManual() && !spots[key]);
+    const items = gardenItems(D.trees).filter((x) => !hidden(`t:${x.id}:0`)).slice(-PLOT_MAX);
     const subs = [], idx = new Map();
     const t = items.map((x) => {
       if (!idx.has(x.subject)) { idx.set(x.subject, subs.length); subs.push([x.subject, colorOf(x.subject)]); }
       return [String(x.id), treeOfSession(x), x.date, Math.round(x.duration), idx.get(x.subject), isWithered(x) ? 1 : 0];
     });
-    return { t, s: subs, p: D.gardenSpots['*'] || null };
+    const dl = decorList();
+    const h = dl.map((id, k) => `d:${id}:${dl.slice(0, k).filter((x) => x === id).length}`).filter(hidden);
+    return { t, s: subs, p: D.gardenSpots['*'] || null, h };
   }
   // A friend's garden, drawn just like mine but look-only. Everything in it came from someone
   // else's computer, so it's checked before use.
@@ -2285,8 +2347,10 @@
         if (Array.isArray(c) && Number.isInteger(c[0]) && Number.isInteger(c[1]) && c[0] >= 0 && c[1] >= 0 && c[0] < 60 && c[1] < 60) spots[k] = [c[0], c[1]];
       });
     }
+    // decorations they've put away in their tray
+    const stored = new Set(Array.isArray(g && g.h) ? g.h.slice(0, 100).filter((k) => typeof k === 'string' && /^d:[a-z]{1,20}:\d{1,3}$/.test(k)) : []);
     if (!items.length && !decor.length) return { count: 0, total: 0 };
-    renderPlot(host, items, { seed: 'garden', key: 'fg', min: 5, count: () => 1, decor, spots });
+    renderPlot(host, items, { seed: 'garden', key: 'fg', min: 5, count: () => 1, decor, spots, stored });
     return { count: items.length, total: items.reduce((a, x) => a + x.duration, 0) };
   }
   function renderGarden() {
@@ -2344,6 +2408,271 @@
         burst(r.left + r.width / 2, r.top + r.height * 0.4, { n: 14, speed: 3, colors: [sp.leaf1 || '#4ade80', sp.leaf2 || '#2e7d3b'] });
       });
     });
+  }
+
+  // ---------------- garden designer (1.22.0) ----------------
+  // A full-screen editor for the garden, a bit like a base editor in a strategy game: clear the
+  // plot into a tray on the side, then drag trees and decorations back in exactly where you want
+  // them. Nothing is deleted: the tray only holds things that aren't shown on the plot.
+  // Saved per garden view as D.gardenSpots[view] (item key -> [row, col]) and
+  // D.gardenStored[view] (item keys in the tray). D.profile.gardenAuto === false means new trees
+  // and decorations wait in the tray instead of planting themselves.
+  const gardenManual = () => D.profile.gardenAuto === false;
+  const storedOf = (view) => new Set(D.gardenStored[view] || []);
+  const gardenArranged = (view) => Object.keys(D.gardenSpots[view] || {}).length > 0 || (D.gardenStored[view] || []).length > 0;
+  const gardenViewTrees = (view) => D.trees.filter((t) => view === '*' || t.subject === view);
+  const gardenOpts = (view) => ({ seed: 'garden' + (view === '*' ? '' : view), key: 'gd', min: 5, count: sessionTrees, decor: decorList() });
+  // every item on a drawn plot -> its tile
+  function readLayout(host) {
+    const out = {};
+    $$('.plot .trees > g', host).forEach((g) => { out[g.dataset.key] = g.dataset.cell.split(',').map(Number); });
+    return out;
+  }
+  // pin a view's current automatic layout, so that later trees can wait in the tray
+  function freezeGarden(view) {
+    if (gardenArranged(view)) return;
+    const tmp = document.createElement('div');
+    renderPlot(tmp, gardenItems(gardenViewTrees(view)), gardenOpts(view));
+    const layout = readLayout(tmp);
+    if (Object.keys(layout).length) D.gardenSpots[view] = layout;
+  }
+  function setGardenAuto(on) {
+    D.profile.gardenAuto = !!on;
+    if (!on) { freezeGarden('*'); Object.keys(D.gardenSpots).forEach(freezeGarden); if (gardenFilter) freezeGarden(gardenFilter); }
+    save();
+    $$('.set-gardenauto').forEach((b) => b.classList.toggle('on', !!on));
+  }
+  // what's in the tray for a view without opening the designer
+  function gardenTrayCount(view) {
+    const tmp = document.createElement('div');
+    if (!gardenArranged(view)) return 0;
+    return renderPlot(tmp, gardenItems(gardenViewTrees(view)), { ...gardenOpts(view), spots: D.gardenSpots[view], stored: storedOf(view), manual: gardenManual() }).tray.length;
+  }
+  function trayLabel(e) {
+    if (e.decor) return DECOR.find((d) => d.id === e.decor).name;
+    return isWithered(e.x) ? 'Withered tree' : window.Tree.get(treeOfSession(e.x)).name;
+  }
+  function openGardenDesigner() {
+    if (readOnly) return toast('This save is from a newer version, so the garden can\'t be changed here');
+    if ($('.gd-back')) return;
+    hideTip();
+    const view = gardenFilter || '*';
+    const items = gardenItems(gardenViewTrees(view));
+    const opts = gardenOpts(view);
+    // start from what's on screen now: everything on the plot pinned where it is, the rest in the tray
+    const tmp = document.createElement('div');
+    const first = renderPlot(tmp, items, { ...opts, spots: D.gardenSpots[view], stored: storedOf(view), manual: gardenManual() });
+    const draft = { spots: readLayout(tmp), stored: new Set(first.tray.map((e) => e.key)), auto: false, dirty: false };
+    let tab = 'trees', api = null;
+
+    const back = document.createElement('div');
+    back.className = 'gd-back';
+    back.innerHTML = `<div class="gd" role="dialog" aria-label="Garden designer">
+      <header class="gd-bar">
+        <div class="gd-title"><h2>Design your garden</h2><span class="muted">${view === '*' ? 'All trees' : esc(view)} · drag things around, or back into the tray</span></div>
+        <div class="gd-tools">
+          <button class="btn small ghost" data-act="clear" title="Put every tree and decoration in the tray"><svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>Clear garden</button>
+          <button class="btn small ghost" data-act="plant" title="Plant everything in the tray in its usual spot"><svg viewBox="0 0 24 24"><path d="M12 21v-8M12 13c-4 0-6-3-6-7 4 0 6 3 6 7zM12 11c0-4 2-7 6-7 0 4-2 7-6 7z"/></svg>Plant the rest</button>
+          <button class="btn small ghost" data-act="auto" title="Let the garden lay itself out again"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 0 1 14-5.3L20 9M20 4v5h-5M20 12a8 8 0 0 1-14 5.3L4 15M4 20v-5h5"/></svg>Auto-arrange</button>
+        </div>
+        <div class="gd-actions"><button class="btn small ghost" data-act="cancel">Cancel</button><button class="btn small primary" data-act="save">Save garden</button></div>
+      </header>
+      <div class="gd-main">
+        <div class="gd-stage garden-scene">
+          <div class="sky"><div class="night-sky"></div><div class="stars"></div><div class="sun"></div><div class="moon"></div><div class="cloud c1"></div><div class="cloud c2"></div></div>
+          <div class="plot-host" id="gd-plot"></div>
+          <div class="gd-empty hidden">Your garden is empty. Drag trees and decorations in from the tray.</div>
+        </div>
+        <aside class="gd-tray">
+          <div class="gd-tabs"><button data-tab="trees">Trees <b></b></button><button data-tab="decor">Decorations <b></b></button><span class="gd-tab-ink"></span></div>
+          <div class="gd-items"></div>
+          <div class="gd-tray-foot">
+            <div class="row-field"><label>Plant new trees automatically</label><button class="switch set-gardenauto${gardenManual() ? '' : ' on'}" role="switch"><span></span></button></div>
+            <p class="muted gd-note"></p>
+          </div>
+        </aside>
+      </div>
+    </div>`;
+    document.body.appendChild(back);
+    const plotHost = $('#gd-plot', back), trayEl = $('.gd-tray', back), itemsEl = $('.gd-items', back);
+    const note = () => { $('.gd-note', back).textContent = gardenManual() ? 'New trees and decorations wait here in the tray until you place them.' : 'New trees and decorations find a free spot on their own. Turn this off to place them yourself.'; };
+    note();
+
+    const draw = (fresh, intro) => {
+      hideTip();
+      api = renderPlot(plotHost, items, {
+        ...opts, spots: draft.spots, stored: draft.stored, calm: !intro, fresh, instant: true, trayEl,
+        onMove: (layout) => { draft.spots = layout; draft.auto = false; draft.dirty = true; },
+        onStore: (key) => setTimeout(() => { draft.stored.add(key); delete draft.spots[key]; draft.auto = false; draft.dirty = true; draw(); }, 200),
+      });
+      // anything that just got a spot of its own is pinned there
+      if (!draft.auto) draft.spots = readLayout(plotHost);
+      $('.gd-empty', back).classList.toggle('hidden', !!$('.plot .trees > g', plotHost));
+      drawTray();
+    };
+    const occupied = (c) => !!$$('.plot .trees > g', plotHost).find((g) => g.dataset.cell === c.join(','));
+    const tileAt = (c) => $$('.plot .tiles > .tile', plotHost)[c[0] * api.n + c[1]];
+    const markTile = (c, ok) => {
+      $$('.plot .tile.drop, .plot .tile.nope', plotHost).forEach((t) => t.classList.remove('drop', 'nope'));
+      if (c && tileAt(c)) tileAt(c).classList.add(ok ? 'drop' : 'nope');
+    };
+    const placeAt = (key, c) => {
+      draft.stored.delete(key);
+      draft.spots[key] = c;
+      draft.auto = false; draft.dirty = true;
+      draw(new Set([key]));
+      const t = tileAt(c);
+      if (t) { const r = t.getBoundingClientRect(); burst(r.left + r.width / 2, r.top + r.height / 2, { n: 12, speed: 2.6, colors: ['#86efac', '#4ade80', '#d6b88a', '#fde68a'] }); }
+    };
+    // a click on a tray item drops it on the free tile nearest the middle
+    const quickPlace = (key) => {
+      const mid = (api.n - 1) / 2;
+      let best = null, bd = Infinity;
+      for (let i = 0; i < api.n; i++) for (let j = 0; j < api.n; j++) {
+        if (occupied([i, j])) continue;
+        const d = (i - mid) ** 2 + (j - mid) ** 2 + hashStr(key + i + ',' + j) % 7 / 10;
+        if (d < bd) { bd = d; best = [i, j]; }
+      }
+      if (!best) return toast('No free spots left. Drag something into the tray first');
+      placeAt(key, best);
+    };
+    function drawTray() {
+      const groups = new Map();
+      api.tray.forEach((e) => {
+        const id = e.decor ? 'd:' + e.decor : 't:' + treeOfSession(e.x) + (isWithered(e.x) ? ':w' : '');
+        if (!groups.has(id)) groups.set(id, []);
+        groups.get(id).push(e);
+      });
+      const all = [...groups.entries()];
+      const treesG = all.filter(([id]) => id[0] === 't'), decorG = all.filter(([id]) => id[0] === 'd');
+      const count = (g) => g.reduce((a, [, l]) => a + l.length, 0);
+      const [bt, bd] = $$('.gd-tabs button', back);
+      bt.querySelector('b').textContent = count(treesG) || '';
+      bd.querySelector('b').textContent = count(decorG) || '';
+      $$('.gd-tabs button', back).forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
+      const list = tab === 'trees' ? treesG : decorG;
+      if (!list.length) {
+        itemsEl.innerHTML = `<div class="gd-tray-empty"><div class="gd-tray-art">${tab === 'trees' ? '🌳' : '⛲'}</div><b>${tab === 'trees' ? 'Every tree is planted' : (decorList().length ? 'Every decoration is placed' : 'No decorations yet')}</b><span class="muted">${tab === 'trees' ? 'Drag a tree here to put it away.' : (decorList().length ? 'Drag one here to put it away.' : 'Buy some in the garden shop.')}</span></div>`;
+        return;
+      }
+      itemsEl.innerHTML = list.map(([id, l], i) => {
+        const e = l[0];
+        const art = e.decor ? `<svg class="gd-art" viewBox="-30 -52 60 62">${decorSvg(e.decor)}</svg>`
+          : staticTree(treeOfSession(e.x), e.x.duration, isWithered(e.x), 'gdt' + i + id.replace(/[^a-z0-9]/gi, ''), true);
+        return `<div class="gd-item" data-g="${esc(id)}" style="--i:${i}" title="Drag onto the garden, or click to drop it in"><div class="gd-item-art">${art}</div><div class="gd-item-name">${esc(trayLabel(e))}</div>${l.length > 1 ? `<span class="gd-count">×${l.length}</span>` : ''}</div>`;
+      }).join('');
+      paintTrees(itemsEl);
+      $$('.gd-item', itemsEl).forEach((card) => card.addEventListener('pointerdown', (ev) => {
+        if (ev.button !== 0) return;
+        ev.preventDefault();
+        const key = groups.get(card.dataset.g)[0].key;
+        const sx = ev.clientX, sy = ev.clientY;
+        let ghost = null, cell = null;
+        const move = (e) => {
+          if (!ghost) {
+            if (Math.hypot(e.clientX - sx, e.clientY - sy) < 5) return;
+            ghost = document.createElement('div');
+            ghost.className = 'gd-ghost';
+            ghost.innerHTML = $('.gd-item-art', card).innerHTML;
+            document.body.appendChild(ghost);
+            card.classList.add('lifting');
+            plotHost.classList.add('placing');
+          }
+          ghost.style.left = e.clientX + 'px'; ghost.style.top = e.clientY + 'px';
+          const c = api.cellAtClient(e.clientX, e.clientY);
+          const same = (c && cell && c.join() === cell.join()) || (!c && !cell);
+          cell = c;
+          if (!same) markTile(c, c && !occupied(c));
+          ghost.classList.toggle('bad', !!c && occupied(c));
+          ghost.classList.toggle('over', !!c);
+        };
+        const up = (e) => {
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', up);
+          window.removeEventListener('pointercancel', up);
+          card.classList.remove('lifting');
+          plotHost.classList.remove('placing');
+          markTile(null);
+          if (!ghost) return e.type === 'pointerup' && quickPlace(key);
+          const ok = e.type === 'pointerup' && cell && !occupied(cell);
+          if (ok) { ghost.remove(); placeAt(key, cell); return; }
+          if (cell && e.type === 'pointerup') toast('Something is already there. Drop it on an empty tile');
+          // didn't land anywhere: float back to the tray
+          const r = card.getBoundingClientRect();
+          ghost.classList.add('home');
+          ghost.style.left = r.left + r.width / 2 + 'px'; ghost.style.top = r.top + r.height / 2 + 'px';
+          setTimeout(() => ghost.remove(), 320);
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+        window.addEventListener('pointercancel', up);
+      }));
+    }
+
+    const close = () => {
+      document.removeEventListener('keydown', onKey, true);
+      back.classList.add('closing');
+      setTimeout(() => back.remove(), 300);
+      hideTip();
+    };
+    const cancel = async () => {
+      if (draft.dirty) {
+        const v = await modal({ title: 'Leave without saving?', body: 'The changes you made to your garden will be lost.', actions: [{ label: 'Keep designing', ghost: true, value: false }, { label: 'Discard changes', danger: true, value: true }] });
+        if (!v) return;
+      }
+      close();
+    };
+    const commit = () => {
+      if (draft.auto && !gardenManual()) { delete D.gardenSpots[view]; delete D.gardenStored[view]; }
+      else {
+        D.gardenSpots[view] = draft.auto ? readLayout(plotHost) : draft.spots;
+        if (draft.stored.size) D.gardenStored[view] = [...draft.stored]; else delete D.gardenStored[view];
+      }
+      save();
+      close();
+      renderGarden();
+      toast(draft.stored.size ? `Garden saved · ${draft.stored.size} thing${draft.stored.size === 1 ? '' : 's'} left in the tray` : 'Garden saved');
+    };
+    function onKey(e) {
+      if (e.key !== 'Escape' || $('#modal-host .modal-back')) return;
+      e.stopPropagation(); e.preventDefault();
+      if ($('.plot.dragging', plotHost)) return; // the drag cancels itself
+      cancel();
+    }
+    document.addEventListener('keydown', onKey, true);
+    $$('.gd-tabs button', back).forEach((b) => b.addEventListener('click', () => { tab = b.dataset.tab; itemsEl.classList.remove('swap'); void itemsEl.offsetWidth; itemsEl.classList.add('swap'); drawTray(); }));
+    $('.set-gardenauto', back).addEventListener('click', () => { setGardenAuto(gardenManual()); note(); });
+    back.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-act]');
+      if (!b) return;
+      const act = b.dataset.act;
+      if (act === 'cancel') return cancel();
+      if (act === 'save') return commit();
+      if (act === 'clear') {
+        const gs = $$('.plot .trees > g', plotHost);
+        if (!gs.length) return toast('The garden is already empty');
+        // everything hops up and into the tray, front rows last
+        gs.forEach((g, i) => { g.style.setProperty('--o', `${Math.min(i, 80) * 6}ms`); g.classList.add('clearing'); });
+        trayEl.classList.add('drop-in');
+        setTimeout(() => {
+          trayEl.classList.remove('drop-in');
+          gs.forEach((g) => draft.stored.add(g.dataset.key));
+          draft.spots = {}; draft.auto = false; draft.dirty = true;
+          draw();
+        }, 360 + Math.min(gs.length, 80) * 6);
+      }
+      if (act === 'plant') {
+        if (!draft.stored.size) return toast('The tray is already empty');
+        const fresh = new Set(draft.stored);
+        draft.stored.clear(); draft.dirty = true;
+        draw(fresh);
+      }
+      if (act === 'auto') {
+        draft.spots = {}; draft.stored.clear(); draft.auto = true; draft.dirty = true;
+        draw(null, true);
+      }
+    });
+    draw(null, true);
   }
 
   // ---------------- trees page: cases + collection ----------------
@@ -3522,6 +3851,7 @@
     $('#set-name').value = D.profile.name || '';
     $('#set-automini').classList.toggle('on', !!D.profile.autoMini);
     $('#set-welcome').classList.toggle('on', D.profile.welcome !== false);
+    $$('.set-gardenauto').forEach((b) => b.classList.toggle('on', !gardenManual()));
     renderThemeGrid($('#set-themes'));
     renderSubjectSettings();
     renderGradingSettings();
@@ -3950,6 +4280,12 @@
     });
     $('#set-automini').addEventListener('click', () => { D.profile.autoMini = !D.profile.autoMini; $('#set-automini').classList.toggle('on', D.profile.autoMini); save(); });
     $('#set-welcome').addEventListener('click', () => { D.profile.welcome = D.profile.welcome === false; $('#set-welcome').classList.toggle('on', D.profile.welcome); save(); });
+    $('#set-gardenauto').addEventListener('click', () => {
+      setGardenAuto(gardenManual());
+      toast(gardenManual() ? 'New trees will wait in the garden designer\'s tray until you place them' : 'New trees will plant themselves in the garden again');
+    });
+    $('#set-gardendesign').addEventListener('click', () => { go('garden'); setTimeout(openGardenDesigner, 450); });
+    $('#gs-design').addEventListener('click', openGardenDesigner);
     const addS = () => { if (addSubjectFromInput($('#set-new-subject'))) { renderSubjectSettings(); renderSubjectChips(); } };
     $('#set-add-subject').addEventListener('click', addS);
     $('#set-new-subject').addEventListener('keydown', (e) => { if (e.key === 'Enter') addS(); });
