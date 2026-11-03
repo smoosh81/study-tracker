@@ -17,8 +17,9 @@ contextBridge.exposeInMainWorld('api', {
   miniCommand: (c) => ipcRenderer.send('mini:command', c),
   miniResize: (w, h) => ipcRenderer.send('mini:resize', { w, h }),
   miniCorner: () => ipcRenderer.send('mini:corner'),
+  setFocusMode: (on) => ipcRenderer.send('focus:set', !!on),
   on: (channel, fn) => {
-    const ok = ['mini:state', 'mini:command', 'mini:closed', 'update:state'];
+    const ok = ['mini:state', 'mini:command', 'mini:closed', 'update:state', 'focus:left'];
     if (ok.includes(channel)) ipcRenderer.on(channel, (_e, ...args) => fn(...args));
   },
   updateState: () => ipcRenderer.invoke('update:state'),
